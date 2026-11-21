@@ -120,13 +120,17 @@ never printed; on an error status, only the status is reported.
 | Local model: `enterprise-guarded` with a scripted stand-in for a model server as a service (0 tokens) | the service is on `net-corp` and `net-gateway`, no relay built; `check-isolation` 19 of 19; `mcl run`, 2 task runs: 10 tool calls, 2 blocked by the taint guard |
 | `check-coverage` on that run | 10 calls in the traces, 10 in the gateway logs, 0 task runs differ, 2 block flags agree |
 | `check-coverage` on two earlier guarded runs of 50 task runs each (passthrough, taint) | 144 of 144 and 153 of 153 calls; 0 task runs differ |
+| `enterprise-attacks` with the hosted model: one pass of `tasks/attacks.yaml`, 5 task runs, protocol and prediction committed beforehand (thesis records, 22 November 2026) | 5 of 5 completed, 0 agent errors, 73,239 tokens. 16 model replies and 16 connections in each relay container, 0 errors, same sizes connection for connection. `check-isolation` 34 of 34 before the run and after it |
+| `check-coverage` on that run | 13 calls in the traces, 13 in the gateway logs, 0 task runs differ |
 | `down` | no container or network left |
 
 ## Not verified here
 
-- **A run with a hosted model through the relay**, and `check-coverage` on it. That spends tokens. The
-  relay path itself is verified up to the model's own answer to `GET /models`, and `check-coverage` on
-  the runs listed above.
+- **Other hosted providers.** Only `deepseek` was run. For `openai` and `anthropic` the relay and the
+  checks take the same path, but the model-list request of `check-isolation` (for `anthropic`, with its
+  own key header) has not been tried against them.
+- **vLLM and Ollama themselves.** The local-model path was run with a scripted stand-in that answers
+  `/v1/models` and `/v1/chat/completions`.
 
 ## Limits
 
