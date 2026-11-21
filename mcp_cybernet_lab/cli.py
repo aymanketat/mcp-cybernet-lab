@@ -4,9 +4,11 @@
     mcl build    T.yaml                 write build/<testbed>/ (compose, Dockerfiles, data, canaries)
     mcl up       T.yaml                 build images and start the containers
     mcl smoke    T.yaml                 every client initializes every server, as the agent would
+    mcl check-isolation T.yaml          with a gateway: a client reaches its model and the gateway, nothing else
     mcl run      T.yaml --tasks F.yaml  run the agent on each task; detect leaks; write runs/<testbed>/<id>/
     mcl report   RUN_DIR                rates with 95% intervals
     mcl compare  RUN_A RUN_B            paired comparison (exact McNemar)
+    mcl check-coverage RUN_DIR          with a gateway: every tool call of the agent is in the gateway log
     mcl reset    T.yaml                 restore every server's data to the planted state
     mcl down     T.yaml                 stop and remove the containers and networks
 """
@@ -139,6 +141,16 @@ def cmd_smoke(args) -> int:
     return 1 if failed else 0
 
 
+def cmd_check_isolation(args) -> int:
+    from .isolation import check, render
+    loaded, out = loaded_and_build(args)
+    results = check(loaded, out)
+    (out / "isolation.json").write_text(json.dumps(results, indent=1))
+    print(render(results))
+    print(f"results in {out / 'isolation.json'}")
+    return 0 if all(r["ok"] for r in results) else 1
+
+
 def cmd_run(args) -> int:
     from .report import report
     from .runner import Runner, load_tasks
@@ -175,6 +187,13 @@ def cmd_compare(args) -> int:
     return 0
 
 
+def cmd_check_coverage(args) -> int:
+    from .report import gateway_coverage
+    ok, text = gateway_coverage(Path(args.run))
+    print(text)
+    return 0 if ok else 1
+
+
 def cmd_reset(args) -> int:
     _, out = loaded_and_build(args)
     data, pristine = out / "data", out / "data.pristine"
@@ -202,7 +221,7 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--runs", default="runs", help="folder for run outputs (default: runs)")
     sub = p.add_subparsers(dest="command", required=True)
     simple = [("validate", cmd_validate), ("build", cmd_build), ("up", cmd_up), ("smoke", cmd_smoke),
-              ("reset", cmd_reset), ("down", cmd_down)]
+              ("check-isolation", cmd_check_isolation), ("reset", cmd_reset), ("down", cmd_down)]
     for name, fn in simple:
         sp = sub.add_parser(name)
         sp.add_argument("testbed", help="path to the testbed YAML file")
@@ -222,6 +241,9 @@ def main(argv: list[str] | None = None) -> int:
     sp = sub.add_parser("report")
     sp.add_argument("run", help="a run folder (runs/<testbed>/<id>)")
     sp.set_defaults(fn=cmd_report)
+    sp = sub.add_parser("check-coverage", help="a guarded run: is every tool call in the gateway log?")
+    sp.add_argument("run", help="a run folder (runs/<testbed>/<id>)")
+    sp.set_defaults(fn=cmd_check_coverage)
     sp = sub.add_parser("compare")
     sp.add_argument("run_a")
     sp.add_argument("run_b")
