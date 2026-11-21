@@ -78,7 +78,7 @@ def cmd_validate(args) -> int:
     http = sum(s.transport == "http" for s in tb.servers)
     print(f"ok: {tb.testbed} — {len(tb.servers)} servers ({http} http, {len(tb.servers) - http} stdio), "
           f"{len(tb.clients)} clients, {len(tb.domains)} domains, {len(tb.services)} services, "
-          f"gateway {tb.gateway.guard}, seed {tb.seed}")
+          f"gateway {tb.gateway.guard}{', llm egress relay' if tb.llm.egress == 'relay' else ''}, seed {tb.seed}")
     try:
         check_buildable(tb)
     except TestbedError as e:

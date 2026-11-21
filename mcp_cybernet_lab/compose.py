@@ -21,13 +21,14 @@ import shutil
 import subprocess
 from datetime import datetime, timezone
 from pathlib import Path
+from urllib.parse import urlsplit
 
 import yaml
 
 from . import __version__
 from .guards import default_policy
 from .loader import Loaded, TestbedError, check_buildable
-from .schema import Client, Server, Service, Testbed
+from .schema import LLM_EGRESS, LLM_RELAY, Client, Server, Service, Testbed
 from .seeding import canary_file_text, make_canaries, stream
 
 REPO = Path(__file__).resolve().parent.parent
@@ -35,7 +36,9 @@ PACKAGE = Path(__file__).resolve().parent
 RUNTIME = REPO / "images" / "runtime"
 CONTAINER_MODULES = ["probe.py", "mcpclient.py", "agent.py", "httpproxy.py", "authproxy.py",
                      "gateway.py", "guards.py", "sink.py"]
+RELAY_MODULE = "llmrelay.py"  # copied only into the LLM relay image, and only when one is built
 HTTP_PORT = 8080
+LLM_PORT = 443  # the relay accepts and forwards HTTPS only
 INNER_PORT = 8081  # where a server listens when an auth proxy sits in front of it
 MCP_PROXY = "mcp-proxy==0.13.0"
 BASE_IMAGE = "node:22-bookworm-slim"
@@ -56,7 +59,7 @@ def needs_token(tb: Testbed, s: Server) -> bool:
     return s.transport == "http" and any(d.id == s.domain and d.auth == "token" for d in tb.domains)
 
 
-def dockerfile(installs: list[Server], cmd: list[str]) -> str:
+def dockerfile(installs: list[Server], cmd: list[str], modules: list[str] = CONTAINER_MODULES) -> str:
     lines = [
         f"FROM {BASE_IMAGE}",
         "RUN apt-get update && apt-get install -y --no-install-recommends \\",
@@ -77,7 +80,7 @@ def dockerfile(installs: list[Server], cmd: list[str]) -> str:
         lines.append(f"RUN python3 /opt/mcl/install_server.py {s.runtime} {source} {s.version or '-'} {s.id}"
                      + "".join(f" '{w}'" for w in s.with_packages))
     # The lab's own Python files change most often: copy them last, to keep the layers above cached.
-    lines.append("COPY " + " ".join(CONTAINER_MODULES) + " /opt/mcl/")
+    lines.append("COPY " + " ".join(modules) + " /opt/mcl/")
     lines.append('ENTRYPOINT ["/opt/mcl/entrypoint.sh"]')
     lines.append(f"CMD {json.dumps(cmd)}")
     return "\n".join(lines) + "\n"
@@ -97,7 +100,9 @@ def netem_env(s: Server) -> dict[str, str]:
 
 
 def llm_env(tb: Testbed) -> dict[str, str]:
-    env = {"MCL_LLM": json.dumps(tb.llm.model_dump())}
+    # `egress` is about the network around the agent, not a setting of the model: left out, so
+    # this value is the same as before the field existed.
+    env = {"MCL_LLM": json.dumps(tb.llm.model_dump(exclude={"egress"}))}
     if tb.llm.api_key_env:
         env[tb.llm.api_key_env] = f"${{{tb.llm.api_key_env}:-}}"  # read from the host at `up`
     return env
@@ -200,9 +205,43 @@ def gateway_service(tb: Testbed, runs: Path) -> dict:
     }
 
 
+def llm_relay_services(tb: Testbed) -> dict[str, dict]:
+    """The two containers that carry a guarded client's HTTPS requests to a hosted model.
+
+    llm-relay holds the provider's host name as an alias on the gateway network and forwards to
+    llm-egress, which is outside that network and so can look up the provider (see llmrelay.py).
+    Neither gets an environment or a volume: they hold no key and see no run data.
+    """
+    host = urlsplit(tb.llm.endpoint).hostname
+    way_out = network_name(next(d.id for d in tb.domains if d.internet))
+
+    def relay(upstream: str, networks, sysctls: dict) -> dict:
+        return {
+            "build": {"context": "context", "dockerfile": f"../dockerfiles/{LLM_RELAY}.Dockerfile"},
+            "image": f"mcl-{tb.testbed}-{LLM_RELAY}",
+            "command": ["python3", f"/opt/mcl/{RELAY_MODULE}", "--listen", f"0.0.0.0:{LLM_PORT}",
+                        "--upstream", upstream, "--server-name", host],
+            "networks": networks,
+            "labels": {"mcl.role": "llm-relay"},
+            "user": "65534:65534",  # nobody
+            "cap_drop": ["ALL"],
+            "read_only": True,
+            # An unprivileged user may listen on 443; and the container on two networks is no router.
+            "sysctls": {"net.ipv4.ip_unprivileged_port_start": 0, **sysctls},
+        }
+
+    return {
+        LLM_RELAY: relay(f"{LLM_EGRESS}:{LLM_PORT}", {GATEWAY_NET: {"aliases": [host]}, way_out: {}},
+                         {"net.ipv4.ip_forward": 0}),
+        LLM_EGRESS: relay(f"{host}:{LLM_PORT}", [way_out], {}),
+    }
+
+
 def service_service(tb: Testbed, v: Service, runs: Path) -> dict:
     svc = {"networks": [network_name(v.domain)],
            "labels": {"mcl.role": "service", "mcl.label": v.label}}
+    if tb.gateway.guard != "none" and v.id == tb.llm_service:
+        svc["networks"].append(GATEWAY_NET)  # the model server: clients behind the gateway call it
     if v.image:
         svc["image"] = v.image
     else:  # builtin webhook-sink: records every request in runs/<testbed>/_sinks/<id>.jsonl
@@ -301,6 +340,11 @@ def build(loaded: Loaded, out: Path, runs: Path | None = None) -> Path:
         (out / "dockerfiles" / "sink.Dockerfile").write_text(dockerfile([], ["python3", "/opt/mcl/sink.py"]))
     for v in tb.services:
         services[v.id] = service_service(tb, v, runs)
+    if tb.llm.egress == "relay":
+        shutil.copy(PACKAGE / RELAY_MODULE, out / "context" / RELAY_MODULE)
+        (out / "dockerfiles" / f"{LLM_RELAY}.Dockerfile").write_text(
+            dockerfile([], ["python3", f"/opt/mcl/{RELAY_MODULE}", "--help"], modules=[RELAY_MODULE]))
+        services |= llm_relay_services(tb)
 
     used = {n for svc in services.values() for n in svc.get("networks", [])}
     networks = {network_name(d.id): {"internal": not d.internet} for d in tb.domains
