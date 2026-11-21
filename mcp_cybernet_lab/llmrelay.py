@@ -23,8 +23,8 @@ ciphertext only.
 
 With --server-name, a connection is forwarded only if it opens with a TLS ClientHello that names
 that host (SNI, sent in clear before encryption starts). Providers sit behind content-delivery
-networks whose addresses answer for many sites; without this check the relay would reach all of
-them.
+networks whose addresses answer TLS for many sites; without this check a client could open a
+verified TLS session with any of them through the relay.
 
 What it logs, on standard output, one JSON line per connection: a counter, the client address,
 byte totals in each direction, the duration and any error. No payload is logged, and none could

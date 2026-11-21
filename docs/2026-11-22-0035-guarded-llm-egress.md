@@ -53,8 +53,9 @@ forwards to `llm-egress`; `llm-egress` is outside `net-gateway`, so it resolves 
 provider. `llm-relay` also has IP forwarding switched off: it sits on two networks and is not a router.
 
 **2. The TLS server name is checked.** A relay that copies TCP to "the provider's address, port 443"
-reaches more than the provider when that address belongs to a content-delivery network. Measured from
-a container with no default route, through a plain TCP relay to `api.deepseek.com:443`, and through
+does not lead to the provider alone when that address belongs to a content-delivery network: the
+network answers TLS for many sites and picks one by the server name the client sends. Measured from a
+container with no default route, through a plain TCP relay to `api.deepseek.com:443`, and through
 `llm-relay`:
 
 | TLS server name asked for | Plain TCP relay | `llm-relay` |
@@ -64,7 +65,12 @@ a container with no default route, through a plain TCP relay to `api.deepseek.co
 | `d1.awsstatic.com` | **verified** (`d1.awsstatic.com`) | refused by the relay |
 | `example.com` | handshake failure (not on that network) | refused by the relay |
 
-A check with `example.com` alone passes on the plain relay and hides this. The relay therefore reads
+Through the plain relay the client held a verified TLS session with another site's server. What the
+network then does with a request is its own rule: in a second test (thesis records, the 18 November
+2026 experiment, revision 2), `HEAD /` sent inside those two sessions was answered with status 421,
+where the same request sent directly gets 200, so no page of another site was fetched. The relay did
+nothing to bring that refusal about, and a check with `example.com` alone passes on the plain relay
+and hides the whole matter. The relay therefore reads
 the server name in the ClientHello, which a client sends in clear before encryption starts, and
 forwards only the provider's. The parser is strict (one complete ClientHello in one record, at most one
 `server_name` extension with exactly one host name), so the relay and the server behind it cannot read
