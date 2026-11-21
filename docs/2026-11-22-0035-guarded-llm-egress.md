@@ -112,9 +112,10 @@ never printed; on an error status, only the status is reported.
 | Unit tests (`pytest`) | 108 passed: the 37 existing and 71 new |
 | Builds at `9c23232` and with this change, all 10 testbeds | as in the table above |
 | `enterprise-attacks`: `up --wait`, `smoke` | 14 containers running; 9/9 connections |
-| `enterprise-attacks`: `check-isolation`, **no API key in the environment** | 33 of 34. TLS to the provider verified end to end through both relay containers. The one other outcome: `GET /models` answered HTTP 401, as it must without a key |
-| `enterprise-guarded`: the same three commands | 5/5 connections; 25 of 26, the same single check |
-| The relay containers, inspected while running | user 65534; no effective capability; no mount; no published port; no key variable in the environment; `ip_forward` 0 in `llm-relay` |
+| `enterprise-attacks`: `check-isolation`, with the API key set for `mcl up` | **34 of 34**, exit status 0. TLS to the provider verified end to end through both relay containers; `GET /models` answered HTTP 200 and listed the testbed's model |
+| `enterprise-guarded`: the same three commands | 5/5 connections; **26 of 26**, exit status 0 |
+| Both testbeds again, with no API key in the environment | 33 of 34 and 25 of 26, exit status 1: `GET /models` answers HTTP 401 and the check says to set the key for `mcl up`. Every other check is unchanged |
+| The relay containers, inspected while running | user 65534; no effective capability; no mount; no published port; no key variable in the environment, also when the agent has one; `ip_forward` 0 in `llm-relay` |
 | Relay logs after the checks | one line per connection, both containers agree on byte totals; the refused connection is logged without the name it asked for |
 | Local model: `enterprise-guarded` with a scripted stand-in for a model server as a service (0 tokens) | the service is on `net-corp` and `net-gateway`, no relay built; `check-isolation` 19 of 19; `mcl run`, 2 task runs: 10 tool calls, 2 blocked by the taint guard |
 | `check-coverage` on that run | 10 calls in the traces, 10 in the gateway logs, 0 task runs differ, 2 block flags agree |
@@ -123,8 +124,9 @@ never printed; on an error status, only the status is reported.
 
 ## Not verified here
 
-- **`GET /models` with a key**, the one isolation check that needs a key. It was run without one.
-- **A run with a hosted model through the relay**, and `check-coverage` on it. That spends tokens.
+- **A run with a hosted model through the relay**, and `check-coverage` on it. That spends tokens. The
+  relay path itself is verified up to the model's own answer to `GET /models`, and `check-coverage` on
+  the runs listed above.
 
 ## Limits
 
