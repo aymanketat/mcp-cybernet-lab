@@ -1,6 +1,6 @@
 # Embedding models: pinned candidates, the pair set, the measures, and the calibration (work package 3, item 3b)
 
-23 November 2026, branch `wp3-embedder`, on top of `wp3-extension-points`. Work package 3 of the
+22 November 2026, branch `wp3-embedder`, on top of `wp3-extension-points`. Work package 3 of the
 FlowGuard lab requirements (revision 3.2, in Ayman Ketat's thesis records), item 3b: the part that
 calibrates candidate embedding models on English-Arabic pairs. It produces a table for a decision
 that is not taken here. No model is chosen, and no model goes into a testbed.
