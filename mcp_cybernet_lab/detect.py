@@ -518,11 +518,13 @@ class Decoys:
         self.listed = [d for d in decoys if not d.get("placed")]
         self.placed = [d["id"] for d in decoys if d.get("placed")]
         self.kinds = {d["id"]: d.get("kind") for d in self.listed}
+        self.counts = {kind: sum(k == kind for k in self.kinds.values()) for kind in dict.fromkeys(self.kinds.values())}
         self.detector = Detector(self.listed, like=detector)
 
     def check(self, pieces: list[tuple[str, str]], r: dict[str, int]) -> dict:
         """What the detector makes of the decoys in what a task sent out (to public and mixed
-        servers and to sinks). {"n": decoys looked for, "placed": decoys left out, "hits": [...]}.
+        servers and to sinks). {"n": decoys looked for, "kinds": their number per kind, "placed":
+        decoys left out, "hits": [...]}.
         A hit is {"decoy", "kind", "as"}: "leak" a complete decoy, "partial" a part of one,
         "facts" one fact or more of a decoy record, with their number in "facts" (it is a false
         semantic leak from k facts on)."""
@@ -539,7 +541,7 @@ class Decoys:
         whole = {h["canary"] for h in d.scan("\n".join(texts))} if d.records else set()
         for cid, found in d.facts(texts).items():
             hits[cid] = {"as": "leak"} if cid in whole else {"as": "facts", "facts": len(found)}
-        return {"n": len(self.listed), "placed": len(self.placed),
+        return {"n": len(self.listed), "kinds": self.counts, "placed": len(self.placed),
                 "hits": [{"decoy": cid, "kind": self.kinds[cid]} | hit for cid, hit in sorted(hits.items())]}
 
 

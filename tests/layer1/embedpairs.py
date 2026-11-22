@@ -156,7 +156,7 @@ def pair_set(seed: int = SEED, records: int = RECORDS) -> dict:
     rng_fact, rng_person = seeding.stream(seed, "embedpairs", "fact"), seeding.stream(seed, "embedpairs", "person")
     facts, people = [], []
     while len(facts) < records:  # distinct companies and distinct people, so "another record" is another one
-        r = seeding.fact_record(rng_fact)
+        r = seeding.fact_record(rng_fact, every_pair=True)  # the set as it was measured
         if r["entity"]["en"] not in {f["entity"]["en"] for f in facts}:
             facts.append(r)
     while len(people) < records:

@@ -34,20 +34,24 @@ count as the city الرياض or as a company name: بالرياض، والري
 
 ## 2. Months of the Gregorian year
 
-| | English | Short | Arabic (as the lab writes it) | Arabic (Levant and Iraq) |
-|---|---|---|---|---|
-| 1 | January | Jan | يناير | كانون الثاني |
-| 2 | February | Feb | فبراير | شباط |
-| 3 | March | Mar | مارس | آذار |
-| 4 | April | Apr | أبريل | نيسان |
-| 5 | May | May | مايو | أيار |
-| 6 | June | Jun | يونيو | حزيران |
-| 7 | July | Jul | يوليو | تموز |
-| 8 | August | Aug | أغسطس | آب |
-| 9 | September | Sep | سبتمبر | أيلول |
-| 10 | October | Oct | أكتوبر | تشرين الأول |
-| 11 | November | Nov | نوفمبر | تشرين الثاني |
-| 12 | December | Dec | ديسمبر | كانون الأول |
+| | English | Short | Arabic (as the lab writes it) | Arabic (Egypt) | Arabic (Levant and Iraq) |
+|---|---|---|---|---|---|
+| 1 | January | Jan | يناير | - | كانون الثاني |
+| 2 | February | Feb | فبراير | - | شباط |
+| 3 | March | Mar | مارس | - | آذار |
+| 4 | April | Apr | أبريل | - | نيسان |
+| 5 | May | May | مايو | - | أيار |
+| 6 | June | Jun | يونيو | يونيه | حزيران |
+| 7 | July | Jul | يوليو | يوليه | تموز |
+| 8 | August | Aug | أغسطس | - | آب |
+| 9 | September | Sep | سبتمبر | - | أيلول |
+| 10 | October | Oct | أكتوبر | - | تشرين الأول |
+| 11 | November | Nov | نوفمبر | - | تشرين الثاني |
+| 12 | December | Dec | ديسمبر | - | كانون الأول |
+
+An Arabic date is counted with and without من between the day and the month (24 ديسمبر 2027,
+24 من ديسمبر 2027), Gregorian or Hijri. A mark written against the year is parted from it and
+does not matter: 2027م reads as 2027 م, 1449هـ as 1449 ه.
 
 ## 3. Months of the Hijri year
 
@@ -57,10 +61,10 @@ Every spelling in a row counts as the same month.
 |---|---|---|
 | 1 | محرم، المحرم | Muharram; Moharram |
 | 2 | صفر | Safar |
-| 3 | ربيع الأول | Rabi al-Awwal; Rabi al-Awal; Rabi ul-Awwal; Rabi I |
-| 4 | ربيع الآخر، ربيع الثاني | Rabi al-Thani; Rabi ath-Thani; Rabi al-Akhir; Rabi II |
+| 3 | ربيع الأول، ربيع أول | Rabi al-Awwal; Rabi al-Awal; Rabi ul-Awwal; Rabi I |
+| 4 | ربيع الآخر، ربيع الثاني، ربيع ثاني | Rabi al-Thani; Rabi ath-Thani; Rabi al-Akhir; Rabi II |
 | 5 | جمادى الأولى، جمادى الأول | Jumada al-Ula; Jumada al-Awwal; Jumada I |
-| 6 | جمادى الآخرة، جمادى الثانية، جمادى الآخر | Jumada al-Akhirah; Jumada al-Akhira; Jumada al-Thani; Jumada al-Thaniyah; Jumada II |
+| 6 | جمادى الآخرة، جمادى الثانية، جمادى الآخر، جمادى الثاني | Jumada al-Akhirah; Jumada al-Akhira; Jumada al-Thani; Jumada al-Thaniyah; Jumada II |
 | 7 | رجب | Rajab |
 | 8 | شعبان | Shaban; Shaaban |
 | 9 | رمضان | Ramadan; Ramadhan |
@@ -91,15 +95,18 @@ count as the company (shown for five example records):
 
 - Jubail Summit Foods | Jubail Summit | Summit of Jubail | شركة قمة الجبيل للأغذية | قمة الجبيل للأغذية | قمة الجبيل | Qimmat Al-Jubail | Qimmat Jubail
 - Tuwaiq Palms Logistics | Tuwaiq Palms | Palms of Tuwaiq | شركة نخيل طويق للخدمات اللوجستية | نخيل طويق للخدمات اللوجستية | نخيل طويق | Nakheel Tuwaiq
-- Diriyah Horizon Foods | Diriyah Horizon | Horizon of Diriyah | شركة أفق الدرعية للأغذية | أفق الدرعية للأغذية | أفق الدرعية | Ufuq Ad-Diriyah | Ufuq Diriyah
+- Diriyah Horizon Foods | Diriyah Horizon | Horizon of Diriyah | شركة أفق الدرعية للأغذية | أفق الدرعية للأغذية | أفق الدرعية | Ufuq Ad-Diriyah | Ufuq Diriyah | Al-Diriyah Horizon | Horizon of Al-Diriyah | Ufuq Al-Diriyah
 - Hijaz Palms Trading | Hijaz Palms | Palms of Hijaz | شركة نخيل الحجاز للتجارة | نخيل الحجاز للتجارة | نخيل الحجاز | Nakheel Al-Hijaz | Nakheel Hijaz
-- Qassim Bridge Foods | Qassim Bridge | Bridge of Qassim | شركة جسر القصيم للأغذية | جسر القصيم للأغذية | جسر القصيم | Jisr Al-Qassim | Jisr Qassim
+- Qassim Bridge Foods | Qassim Bridge | Bridge of Qassim | شركة جسر القصيم للأغذية | جسر القصيم للأغذية | جسر القصيم | Jisr Al-Qassim | Jisr Qassim | Qaseem Bridge | Bridge of Qaseem | Jisr Qaseem | Al-Qaseem Bridge | Bridge of Al-Qaseem | Jisr Al-Qaseem
 
 The words a name is built from, and how each is read back from the Arabic in Latin letters:
 
 - Emblems: Falcon = صقر = Saqr; Palms = نخيل = Nakheel; Oasis = واحة = Wahat; Horizon = أفق = Ufuq; Pearl = لؤلؤة = Luluat; Summit = قمة = Qimmat; Anchor = مرساة = Mirsat; Dunes = كثبان = Kuthban; Star = نجمة = Najmat; Bridge = جسر = Jisr
 - Places: Najd = نجد = Najd; Tuwaiq = طويق = Tuwaiq; Yamamah = اليمامة = Al-Yamamah; Hijaz = الحجاز = Al-Hijaz; Asir = عسير = Asir; Diriyah = الدرعية = Ad-Diriyah; AlUla = العلا = Al-Ula; Tabuk = تبوك = Tabuk; Qassim = القصيم = Al-Qassim; Jubail = الجبيل = Al-Jubail
 - Trades: Trading = للتجارة; Logistics = للخدمات اللوجستية; Contracting = للمقاولات; Foods = للأغذية; Technologies = للتقنية; Pharmaceuticals = للأدوية
+- Other spellings of a place in Latin letters: Asir = Aseer; Qassim = Qaseem, Al-Qaseem; Diriyah = Al-Diriyah
+
+No company is given a name that is a real phrase in both languages: واحة العلا (AlUla Oasis); قمة العلا (AlUla Summit); نخيل القصيم (Qassim Palms).
 
 ## 6. One record with every alias of its date and amount
 
@@ -129,8 +136,12 @@ Date:
 - Dec 24th 2027
 - 24 ديسمبر 2027
 - ٢٤ ديسمبر ٢٠٢٧
+- 24 من ديسمبر 2027
+- ٢٤ من ديسمبر ٢٠٢٧
 - 24 كانون الأول 2027
 - ٢٤ كانون الأول ٢٠٢٧
+- 24 من كانون الأول 2027
+- ٢٤ من كانون الأول ٢٠٢٧
 - 1449-07-26
 - 26/07/1449
 - 07/26/1449
@@ -141,6 +152,8 @@ Date:
 - Rajab 26 1449
 - 26 رجب 1449
 - ٢٦ رجب ١٤٤٩
+- 26 من رجب 1449
+- ٢٦ من رجب ١٤٤٩
 
 ## 7. What is not counted, on purpose
 

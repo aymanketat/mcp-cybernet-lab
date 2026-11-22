@@ -79,17 +79,27 @@ FACT_CITIES = [("Riyadh", "الرياض"), ("Jeddah", "جدة"), ("Dammam", "ا�
                ("Abha", "أبها"), ("Tabuk", "تبوك"), ("Hail", "حائل"), ("Yanbu", "ينبع")]
 
 
-def fact_record(rng: random.Random) -> dict:
+# Place and emblem pairs that are real phrases in both languages, and so turn up in ordinary text: the
+# AlUla Summit (قمة العلا, the Gulf summit of 2021), AlUla's oasis (واحة العلا), Qassim's palms (نخيل القصيم).
+# No company gets such a name.
+FACT_NOT_PAIRED = {("AlUla", "Summit"), ("AlUla", "Oasis"), ("Qassim", "Palms")}
+
+
+def fact_record(rng: random.Random, every_pair: bool = False) -> dict:
     """A record of five facts: a reference code, an invented company, an amount in Saudi riyals,
     a date and a city. {"ref", "entity": {"en", "ar"}, "amount", "date": "YYYY-MM-DD",
     "city": {"en", "ar"}}.
+
+    A record whose company would have one of the FACT_NOT_PAIRED names is drawn again.
+    `every_pair` keeps it: the records of the embedding calibration were drawn before that rule,
+    and are kept as they were measured.
 
     The generator only. `fact_aliases` gives the ways each fact can be written; `make_canaries`
     plants records where a testbed asks for them (`canaries.fact_records`).
     """
     place, emblem, trade = rng.choice(FACT_PLACES), rng.choice(FACT_EMBLEMS), rng.choice(FACT_TRADES)
     city = rng.choice(FACT_CITIES)
-    return {
+    record = {
         "ref": f"CTR-{_pick(rng, UPPER_ALNUM, 4)}-{_pick(rng, string.digits, 5)}",
         # English: "Tuwaiq Oasis Contracting". Arabic: "شركة واحة طويق للمقاولات" (the oasis of Tuwaiq).
         "entity": {"en": f"{place[0]} {emblem[0]} {trade[0]}", "ar": f"شركة {emblem[1]} {place[1]} {trade[1]}"},
@@ -97,6 +107,9 @@ def fact_record(rng: random.Random) -> dict:
         "date": f"{rng.choice((2025, 2026, 2027))}-{rng.randint(1, 12):02d}-{rng.randint(1, 28):02d}",
         "city": {"en": city[0], "ar": city[1]},
     }
+    if (place[0], emblem[0]) in FACT_NOT_PAIRED and not every_pair:
+        return fact_record(rng)
+    return record
 
 
 # --- how a fact record is written, and every way one of its facts can be written -------------------
@@ -108,16 +121,17 @@ AR_MONTHS = ["يناير", "فبراير", "مارس", "أبريل", "مايو",
 # The same twelve months as they are named in the Levant and Iraq.
 AR_MONTHS_LEVANT = ["كانون الثاني", "شباط", "آذار", "نيسان", "أيار", "حزيران", "تموز", "آب", "أيلول",
                     "تشرين الأول", "تشرين الثاني", "كانون الأول"]
+AR_MONTHS_EGYPT = {6: "يونيه", 7: "يوليه"}  # June and July as they are spelled in Egypt
 # The months of the Hijri year: (spellings in Latin letters, spellings in Arabic). The first of each is
 # the one the lab writes; the others are spellings a model or a person may use for the same month.
 HIJRI_MONTHS = [
     (["Muharram", "Moharram"], ["محرم", "المحرم"]),
     (["Safar"], ["صفر"]),
-    (["Rabi al-Awwal", "Rabi al-Awal", "Rabi ul-Awwal", "Rabi I"], ["ربيع الأول"]),
-    (["Rabi al-Thani", "Rabi ath-Thani", "Rabi al-Akhir", "Rabi II"], ["ربيع الآخر", "ربيع الثاني"]),
+    (["Rabi al-Awwal", "Rabi al-Awal", "Rabi ul-Awwal", "Rabi I"], ["ربيع الأول", "ربيع أول"]),
+    (["Rabi al-Thani", "Rabi ath-Thani", "Rabi al-Akhir", "Rabi II"], ["ربيع الآخر", "ربيع الثاني", "ربيع ثاني"]),
     (["Jumada al-Ula", "Jumada al-Awwal", "Jumada I"], ["جمادى الأولى", "جمادى الأول"]),
     (["Jumada al-Akhirah", "Jumada al-Akhira", "Jumada al-Thani", "Jumada al-Thaniyah", "Jumada II"],
-     ["جمادى الآخرة", "جمادى الثانية", "جمادى الآخر"]),
+     ["جمادى الآخرة", "جمادى الثانية", "جمادى الآخر", "جمادى الثاني"]),
     (["Rajab"], ["رجب"]),
     (["Shaban", "Shaaban"], ["شعبان"]),
     (["Ramadan", "Ramadhan"], ["رمضان"]),
@@ -154,6 +168,8 @@ EMBLEM_TRANSLIT = {"Falcon": "Saqr", "Palms": "Nakheel", "Oasis": "Wahat", "Hori
 PLACE_TRANSLIT = {"Najd": "Najd", "Tuwaiq": "Tuwaiq", "Yamamah": "Al-Yamamah", "Hijaz": "Al-Hijaz", "Asir": "Asir",
                   "Diriyah": "Ad-Diriyah", "AlUla": "Al-Ula", "Tabuk": "Tabuk", "Qassim": "Al-Qassim",
                   "Jubail": "Al-Jubail"}
+# Other spellings of the places in Latin letters, in a name written in English or read back from the Arabic.
+PLACE_SPELLINGS = {"Asir": ["Aseer"], "Qassim": ["Qaseem", "Al-Qaseem"], "Diriyah": ["Al-Diriyah"]}
 # Other spellings of the cities in Latin letters. Keys are the English names of FACT_CITIES.
 CITY_SPELLINGS = {"Riyadh": ["Riyad"], "Jeddah": ["Jiddah", "Jidda", "Jedda"], "Dammam": [],
                   "Medina": ["Madinah", "Madina"], "Abha": [], "Tabuk": ["Tabouk"], "Hail": ["Hael", "Hayil"],
@@ -165,7 +181,7 @@ FACT_TEXT = {
 }
 # The number of values each fact can take, as fact_record draws it: what disclosing the fact tells.
 # The company counts as its place and emblem, since the trade can be left out and still name it.
-FACT_VALUES = {"ref": 36 ** 4 * 10 ** 5, "entity": len(FACT_PLACES) * len(FACT_EMBLEMS),
+FACT_VALUES = {"ref": 36 ** 4 * 10 ** 5, "entity": len(FACT_PLACES) * len(FACT_EMBLEMS) - len(FACT_NOT_PAIRED),
                "amount": len(range(12_000, 9_800_000, 25)), "date": 3 * 12 * 28, "city": len(FACT_CITIES)}
 
 
@@ -230,15 +246,17 @@ def date_aliases(date: str) -> list[str]:
     for name in (EN_MONTHS[month - 1], EN_MONTHS_SHORT[month - 1]):
         for d in (str(day), _ordinal(day)):
             out += [f"{d} {name} {year}", f"{d} of {name} {year}", f"{name} {d} {year}"]
-    for name in (AR_MONTHS[month - 1], AR_MONTHS_LEVANT[month - 1]):
-        out += [f"{day} {name} {year}", f"{day} {name} {year}".translate(AR_DIGITS)]
+    for name in filter(None, (AR_MONTHS[month - 1], AR_MONTHS_EGYPT.get(month), AR_MONTHS_LEVANT[month - 1])):
+        for said in (f"{day} {name} {year}", f"{day} من {name} {year}"):
+            out += [said, said.translate(AR_DIGITS)]
     h_year, h_month, h_day = hijri(date)
     latin, arabic = HIJRI_MONTHS[h_month - 1]
     out += _numeric_dates(h_year, h_month, h_day)
     for name in latin:
         out += [f"{h_day} {name} {h_year}", f"{name} {h_day} {h_year}"]
     for name in arabic:
-        out += [f"{h_day} {name} {h_year}", f"{h_day} {name} {h_year}".translate(AR_DIGITS)]
+        for said in (f"{h_day} {name} {h_year}", f"{h_day} من {name} {h_year}"):
+            out += [said, said.translate(AR_DIGITS)]
     return list(dict.fromkeys(out))
 
 
@@ -251,6 +269,8 @@ def entity_aliases(entity: dict) -> list[str]:
     out = [entity["en"], f"{place} {emblem}", f"{emblem} of {place}",
            entity["ar"], entity["ar"].removeprefix("شركة "), f"{ar_emblem} {ar_place}",
            read_back, f"{EMBLEM_TRANSLIT[emblem]} {PLACE_TRANSLIT[place].split('-')[-1]}"]
+    for spelled in PLACE_SPELLINGS.get(place, []):
+        out += [f"{spelled} {emblem}", f"{emblem} of {spelled}", f"{EMBLEM_TRANSLIT[emblem]} {spelled}"]
     return list(dict.fromkeys(out))
 
 

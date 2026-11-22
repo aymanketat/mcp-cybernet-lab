@@ -47,10 +47,15 @@ def reading_sheet() -> str:
             "",
             "## 2. Months of the Gregorian year",
             "",
-            "| | English | Short | Arabic (as the lab writes it) | Arabic (Levant and Iraq) |",
-            "|---|---|---|---|---|"]
-    out += [f"| {i} | {en} | {short} | {ar} | {levant} |" for i, (en, short, ar, levant) in enumerate(zip(
-        seeding.EN_MONTHS, seeding.EN_MONTHS_SHORT, seeding.AR_MONTHS, seeding.AR_MONTHS_LEVANT), 1)]
+            "| | English | Short | Arabic (as the lab writes it) | Arabic (Egypt) | Arabic (Levant and Iraq) |",
+            "|---|---|---|---|---|---|"]
+    out += [f"| {i} | {en} | {short} | {ar} | {seeding.AR_MONTHS_EGYPT.get(i, '-')} | {levant} |"
+            for i, (en, short, ar, levant) in enumerate(zip(
+                seeding.EN_MONTHS, seeding.EN_MONTHS_SHORT, seeding.AR_MONTHS, seeding.AR_MONTHS_LEVANT), 1)]
+    out += ["",
+            "An Arabic date is counted with and without من between the day and the month (24 ديسمبر 2027,",
+            "24 من ديسمبر 2027), Gregorian or Hijri. A mark written against the year is parted from it and",
+            f"does not matter: 2027م reads as{words('2027م').rstrip()}, 1449هـ as{words('1449هـ').rstrip()}."]
     out += ["",
             "## 3. Months of the Hijri year",
             "",
@@ -85,6 +90,12 @@ def reading_sheet() -> str:
             "- Emblems: " + "; ".join(f"{en} = {ar} = {seeding.EMBLEM_TRANSLIT[en]}" for en, ar in seeding.FACT_EMBLEMS),
             "- Places: " + "; ".join(f"{en} = {ar} = {seeding.PLACE_TRANSLIT[en]}" for en, ar in seeding.FACT_PLACES),
             "- Trades: " + "; ".join(f"{en} = {ar}" for en, ar in seeding.FACT_TRADES),
+            "- Other spellings of a place in Latin letters: " + "; ".join(
+                f"{place} = {', '.join(spelled)}" for place, spelled in seeding.PLACE_SPELLINGS.items()),
+            "",
+            "No company is given a name that is a real phrase in both languages: " + "; ".join(
+                f"{dict(seeding.FACT_EMBLEMS)[emblem]} {dict(seeding.FACT_PLACES)[place]} ({place} {emblem})"
+                for place, emblem in sorted(seeding.FACT_NOT_PAIRED)) + ".",
             "",
             "## 6. One record with every alias of its date and amount",
             ""]

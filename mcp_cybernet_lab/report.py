@@ -115,6 +115,11 @@ def facts_and_decoys(rows: list[dict]) -> list[str]:
                 if h["decoy"] not in hits or strength(h) > strength(hits[h["decoy"]]):
                     hits[h["decoy"]] = h
         flagged = [h for h in hits.values() if h["as"] != "facts" or h["facts"] >= k]
+        # A passphrase is made of words, not of random characters: the bound on chance matches does
+        # not hold for it. Its decoys are counted apart and given as measured, with no interval.
+        words = max((r["decoys"].get("kinds", {}).get("passphrase", 0) for r in with_decoys), default=0)
+        phrases = [h for h in flagged if h["kind"] == "passphrase"]
+        flagged, n = [h for h in flagged if h["kind"] != "passphrase"], n - words
         lo, hi = wilson(len(flagged), n)
         lines.append(f"  decoys           {len(flagged)} of {n} distinct decoys flagged = {len(flagged) / n:.2%} "
                      f"[95% CI {lo:.2%}–{hi:.2%}] over {len(with_decoys)} task runs" if n else
@@ -126,6 +131,9 @@ def facts_and_decoys(rows: list[dict]) -> list[str]:
                 lines.append("                   flagged by kind: " + ", ".join(
                     f"{kind} {c}" for kind, c in sorted(Counter(h["kind"] for h in flagged).items()))
                     + "; as: " + ", ".join(f"{a} {c}" for a, c in sorted(Counter(h["as"] for h in flagged).items())))
+            if words:
+                lines.append(f"                   passphrase decoys {len(phrases)} of {words} flagged, as measured "
+                             "(words, not random characters: no bound is claimed)")
             records = [h for h in hits.values() if h["as"] == "facts"]
             if records:
                 lines.append("                   decoy records with at least 1, 2, 3, 4, 5 facts out: " + ", ".join(
