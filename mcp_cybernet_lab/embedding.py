@@ -38,6 +38,7 @@ import urllib.request
 from pathlib import Path
 
 HUB = "https://huggingface.co"
+RETRIES = 8  # attempts per file; each goes on from the bytes already there
 MODELS = {
     "e5-small": {
         "repo": "intfloat/multilingual-e5-small", "revision": "614241f622f53c4eeff9890bdc4f31cfecc418b3",
@@ -121,16 +122,26 @@ def fetch(name: str, root: Path | None = None, log=print) -> Path:
         part = target.with_name(target.name + ".part")
         url = f"{HUB}/{spec['repo']}/resolve/{spec['revision']}/{path}"
         log(f"{name}: fetching {path}")
-        h = hashlib.sha256()
-        with urllib.request.urlopen(urllib.request.Request(url, headers={"User-Agent": "mcl-embedding"}),
-                                    timeout=120) as r, open(part, "wb") as out:
-            while chunk := r.read(1 << 20):
-                h.update(chunk)
-                out.write(chunk)
-        if h.hexdigest() != pinned:
+        for attempt in range(1, RETRIES + 1):  # a large file over a slow line: go on where it broke off
+            have = part.stat().st_size if part.is_file() else 0
+            request = urllib.request.Request(url, headers={"User-Agent": "mcl-embedding",
+                                                           **({"Range": f"bytes={have}-"} if have else {})})
+            try:
+                with urllib.request.urlopen(request, timeout=120) as r:
+                    resumed = have and getattr(r, "status", 200) == 206
+                    with open(part, "ab" if resumed else "wb") as out:
+                        while chunk := r.read(1 << 20):
+                            out.write(chunk)
+                break
+            except OSError as e:  # timeouts and broken connections; HTTP errors too
+                if attempt == RETRIES or getattr(e, "code", None) in (401, 403, 404):
+                    raise EmbeddingError(f"embedding model '{name}': {path} could not be fetched: {e}") from None
+                log(f"{name}: {path} broke off ({type(e).__name__}); trying again from where it stopped")
+        got = file_sha256(part)  # of the whole file as it now lies on disk, however many parts it came in
+        if got != pinned:
             part.unlink()
             raise EmbeddingError(f"embedding model '{name}': {path} at revision {spec['revision']} has SHA-256 "
-                                 f"{h.hexdigest()}, pinned is {pinned}; nothing was kept")
+                                 f"{got}, pinned is {pinned}; nothing was kept")
         part.replace(target)
     verify(name, root)
     return folder

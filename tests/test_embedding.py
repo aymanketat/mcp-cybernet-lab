@@ -39,12 +39,34 @@ def tiny(monkeypatch, tmp_path):
     served = dict(files)
     asked = []
 
+    class Response(io.BytesIO):
+        status = 200
+
     def urlopen(request, timeout=None):
         asked.append(request.full_url)
-        return io.BytesIO(served[request.full_url.split("/resolve/" + "a" * 40 + "/")[1]])
+        data = served[request.full_url.split("/resolve/" + "a" * 40 + "/")[1]]
+        start = int(request.headers.get("Range", "bytes=0-")[6:-1])
+        response = Response(data[start:])
+        response.status = 206 if start else 200
+        breaks.append(None)
+        if len(breaks) == break_at.get("call"):  # the line drops after three bytes
+            response = Response(data[start:start + 3])
+            response.status = 206 if start else 200
+            real_read = response.read
+
+            def read(n=-1):
+                chunk = real_read(n)
+                if not chunk:
+                    raise TimeoutError("The read operation timed out")
+                return chunk
+
+            response.read = read
+        return response
+
+    breaks, break_at = [], {}
 
     monkeypatch.setattr(embedding.urllib.request, "urlopen", urlopen)
-    return {"root": tmp_path, "served": served, "asked": asked}
+    return {"root": tmp_path, "served": served, "asked": asked, "break_at": break_at}
 
 
 def test_fetch_takes_the_pinned_revision_and_verifies(tiny):
@@ -56,6 +78,13 @@ def test_fetch_takes_the_pinned_revision_and_verifies(tiny):
     tiny["asked"].clear()
     embedding.fetch("tiny", tiny["root"], log=lambda *_: None)
     assert tiny["asked"] == []  # nothing is fetched twice
+
+
+def test_a_download_that_breaks_off_goes_on_from_where_it_stopped(tiny):
+    tiny["break_at"]["call"] = 1  # the first request delivers three bytes, then times out
+    embedding.fetch("tiny", tiny["root"], log=lambda *_: None)
+    assert embedding.verify("tiny", tiny["root"]) == embedding.MODELS["tiny"]["files"]
+    assert len(tiny["asked"]) == 3  # the broken file was asked for twice, the second time for the rest
 
 
 def test_a_file_that_is_not_the_pinned_one_is_refused_and_not_kept(tiny):
