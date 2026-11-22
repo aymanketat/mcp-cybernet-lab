@@ -131,9 +131,14 @@ def test_thresholds_and_recall():
     zero, rate = c.thresholds(decoys)
     assert zero == 0.4999 and rate == 0.4994             # five of 5,000 decoys (0.1 %) lie above the second
     assert sum(d > rate for d in decoys) == 5 and sum(d > zero for d in decoys) == 0
-    m = c.measure([0.3, 0.49945, 0.6, 0.9], decoys)
+    units = [f"line{i % 200}" for i in range(5000)]      # 5,000 comparisons reuse 200 decoy texts
+    m = c.measure([0.3, 0.49945, 0.6, 0.9], decoys, units)
     assert (m["recall_at_zero"], m["recall_at_rate"]) == (0.5, 0.75)
-    assert m["bound_at_zero"] == 3 / 5000 and round(m["margin"], 4) == round(0.3 - 0.4999, 4)
+    assert round(m["margin"], 4) == round(0.3 - 0.4999, 4)
+    # the bound counts the distinct texts, not the comparisons: 3/200, not 3/5000
+    assert (m["decoy_units"], m["bound_units_at_zero"]) == (200, 3 / 200)
+    # a text matches if any of its comparisons does: none above every decoy, five above the 0.1 % threshold
+    assert (m["units_matching_at_zero"], m["units_matching_at_rate"]) == (0, 5)
 
 
 def test_the_check_texts_are_twenty_texts_of_the_pair_set_in_both_languages():

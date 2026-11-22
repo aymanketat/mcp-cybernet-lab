@@ -17,11 +17,16 @@ Measures, per model, with score = cosine of the two vectors of a comparison:
   - the score gap: median positive minus median decoy, and lowest positive minus highest decoy;
   each against easy decoys and against hard decoys separately, for fact records and person records
   separately; recall against easy decoys also by language direction and by what the sink did.
-  With n decoy comparisons and none matching, the rate is below about 3/n (95 %).
+  Comparisons that reuse the same texts are not independent trials, so a bound counts distinct
+  decoy texts: with none of n distinct texts matching, the rate for new text of that sort is below
+  about 3/n (95 %): 1.5 % for the 200 ordinary lines, 6 % for the 50 records of a kind. Decoys are
+  therefore also counted per unit: an ordinary line, or a decoy record, matches if it exceeds the
+  threshold against any source.
   - milliseconds per text (median, one thread, this machine), the token limit, texts refused as
     too long, and the size of the pinned files.
   - held out, numbers only: the real translations in stored runs (--held-out), text against its
-    translation, scored against the same thresholds. Not used for anything else.
+    translation, scored against the easy-decoy thresholds of fact records and of person records
+    (they translate a name and a national ID). Not used for anything else.
   - the same text embedded in two fresh processes gives the same bytes.
 """
 
@@ -97,15 +102,23 @@ def thresholds(decoys: list[float]) -> tuple[float, float]:
     return ranked[0], ranked[int(RATE * len(ranked))]
 
 
-def measure(positives: list[float], decoys: list[float]) -> dict:
+def measure(positives: list[float], decoys: list[float], units: list[str]) -> dict:
+    """units: for each decoy comparison, the decoy text it reuses (an ordinary line) or the record
+    its text was filled with. A unit matches if any of its comparisons exceeds the threshold."""
     zero, rate = thresholds(decoys)
-    return {"positives": len(positives), "decoys": len(decoys),
+    best: dict[str, float] = {}
+    for score, unit in zip(decoys, units):
+        best[unit] = max(score, best.get(unit, -1.0))
+    return {"positives": len(positives), "decoys": len(decoys), "decoy_units": len(best),
+            "units_matching_at_zero": sum(s > zero for s in best.values()),
+            "units_matching_at_rate": sum(s > rate for s in best.values()),
+            "bound_units_at_zero": 3 / len(best),
             "recall_at_zero": sum(s > zero for s in positives) / len(positives),
             "recall_at_rate": sum(s > rate for s in positives) / len(positives),
             "threshold_zero": zero, "threshold_rate": rate,
             "median_positive": statistics.median(positives), "median_decoy": statistics.median(decoys),
             "gap_medians": statistics.median(positives) - statistics.median(decoys),
-            "margin": min(positives) - zero, "bound_at_zero": 3 / len(decoys)}
+            "margin": min(positives) - zero}
 
 
 def held_out(run_dirs: list[Path]) -> list[tuple[str, str]]:
@@ -142,6 +155,7 @@ def calibrate(name: str, pair_set: dict, translations: list[tuple[str, str]]) ->
         except embedding.TooLong:
             refused.append(text_id)
     scores = collections.defaultdict(list)   # (kind, class) -> scores
+    units = collections.defaultdict(list)    # (kind, class) -> the decoy line or decoy record of each score
     detail = collections.defaultdict(list)   # (kind, "direction" | "family", value) -> positive scores
     dropped = collections.Counter()
     for p in pair_set["pairs"]:
@@ -150,6 +164,7 @@ def calibrate(name: str, pair_set: dict, translations: list[tuple[str, str]]) ->
             continue
         s = cosine(vectors[p["source"]], vectors[p["sink"]])
         scores[(p["kind"], p["class"])].append(s)
+        units[(p["kind"], p["class"])].append(p["sink"] if p["class"] == "easy" else p["sink"].split("/")[0])
         if p["class"] == "positive":
             detail[(p["kind"], "direction", f"{p['source_lang']} to {p['sink_lang']}")].append(s)
             detail[(p["kind"], "family", p["family"])].append(s)
@@ -163,25 +178,28 @@ def calibrate(name: str, pair_set: dict, translations: list[tuple[str, str]]) ->
               "same_bytes_in_two_processes": same_bytes_in_two_processes(name), "measures": {}, "detail": {}}
     for kind in ("fact", "person"):
         for decoy in ("easy", "hard"):
-            result["measures"][f"{kind}/{decoy}"] = measure(scores[(kind, "positive")], scores[(kind, decoy)])
+            result["measures"][f"{kind}/{decoy}"] = measure(scores[(kind, "positive")], scores[(kind, decoy)],
+                                                             units[(kind, decoy)])
         zero, rate = thresholds(scores[(kind, "easy")])
         for (k, by, value), s in sorted(detail.items()):
             if k == kind:
                 result["detail"][f"{kind}/{by}/{value}"] = {
                     "positives": len(s), "recall_at_zero": sum(x > zero for x in s) / len(s),
                     "recall_at_rate": sum(x > rate for x in s) / len(s), "median": statistics.median(s)}
-    # Held out: real translations, scored against the thresholds of the easy decoys of fact records.
-    zero, rate = thresholds(scores[("fact", "easy")])
+    # Held out: real translations, scored against the easy-decoy thresholds of both kinds of record.
     real, too_long = [], 0
     for text, translation in translations:
         try:
             real.append(cosine(e.embed_one(text), e.embed_one(translation)))
         except embedding.TooLong:
             too_long += 1
-    result["held_out"] = {"translations": len(translations), "refused_too_long": too_long} | (
-        {"above_threshold_zero": sum(s > zero for s in real) / len(real),
-         "above_threshold_rate": sum(s > rate for s in real) / len(real),
-         "lowest": min(real), "median": statistics.median(real)} if real else {})
+    result["held_out"] = {"translations": len(translations), "refused_too_long": too_long}
+    if real:
+        result["held_out"] |= {"lowest": min(real), "median": statistics.median(real)}
+        for kind in ("fact", "person"):
+            zero, rate = thresholds(scores[(kind, "easy")])
+            result["held_out"] |= {f"above_{kind}_threshold_zero": sum(s > zero for s in real) / len(real),
+                                   f"above_{kind}_threshold_rate": sum(s > rate for s in real) / len(real)}
     return result
 
 
@@ -196,11 +214,16 @@ def table(results: list[dict], machine: str) -> str:
             m0 = first[f"{kind}/{decoy}"]
             out += [f"### {kind.capitalize()} records against {decoy} decoys "
                     f"({m0['positives']} positives, {m0['decoys']} decoy comparisons, before texts refused as too long)", "",
-                    "| Model | Recall at zero decoy matches | Recall at 0.1 % | Median positive | Median decoy | "
-                    "Highest decoy | Lowest positive minus highest decoy | Decoys compared |", "|---|---|---|---|---|---|---|---|"]
+                    f"Distinct decoy {'lines' if decoy == 'easy' else 'records'}: {m0['decoy_units']}; none matching "
+                    f"bounds the rate for new ones at about {100 * m0['bound_units_at_zero']:.1f} % (95 %).", "",
+                    "| Model | Recall at zero decoy matches | Recall at 0.1 % of comparisons | "
+                    f"Decoy {'lines' if decoy == 'easy' else 'records'} matching at that 0.1 % threshold | "
+                    "Median positive | Median decoy | Highest decoy | Lowest positive minus highest decoy | "
+                    "Decoy comparisons |", "|---|---|---|---|---|---|---|---|---|"]
             for r in results:
                 m = r["measures"][f"{kind}/{decoy}"]
                 out.append(f"| {r['model']} | {pct(m['recall_at_zero'])} | {pct(m['recall_at_rate'])} | "
+                           f"{m['units_matching_at_rate']} of {m['decoy_units']} | "
                            f"{m['median_positive']:.3f} | {m['median_decoy']:.3f} | {m['threshold_zero']:.3f} | "
                            f"{m['margin']:+.3f} | {m['decoys']} |")
             out.append("")
@@ -216,15 +239,24 @@ def table(results: list[dict], machine: str) -> str:
         out.append("")
     out += ["### Cost, limits and the held-out translations", "",
             "| Model | Dimensions | Token limit | Texts refused as too long | ms per text, median (95th percentile) | "
-            "Pinned files | Same bytes in two processes | Real translations above the zero-match threshold | "
-            "above the 0.1 % threshold | lowest, median score |", "|---|---|---|---|---|---|---|---|---|---|"]
+            "Pinned files | Same bytes in two processes |", "|---|---|---|---|---|---|---|"]
     for r in results:
-        h = r["held_out"]
-        real = (f"{pct(h['above_threshold_zero'])} of {h['translations'] - h['refused_too_long']} | "
-                f"{pct(h['above_threshold_rate'])} | {h['lowest']:.3f}, {h['median']:.3f}") if "lowest" in h else "none given | | "
         out.append(f"| {r['model']} | {r['dim']} | {r['token_limit']} | {r['refused_too_long']} of {r['texts']} | "
                    f"{r['ms_per_text_median']:.0f} ({r['ms_per_text_p95']:.0f}) | {r['files_mb']:.0f} MB | "
-                   f"{'yes' if r['same_bytes_in_two_processes'] else 'NO'} | {real} |")
+                   f"{'yes' if r['same_bytes_in_two_processes'] else 'NO'} |")
+    if any("lowest" in r["held_out"] for r in results):
+        out += ["", "### Held out: the real translations of stored runs (a text against its translation)", "",
+                "Share scoring above the easy-decoy thresholds of each kind of record. Not used to set anything.", "",
+                "| Model | Translations scored (refused as too long) | Above the fact threshold: zero matches | "
+                "fact: 0.1 % | Above the person threshold: zero matches | person: 0.1 % | Lowest, median score |",
+                "|---|---|---|---|---|---|---|"]
+        for r in results:
+            h = r["held_out"]
+            if "lowest" in h:
+                out.append(f"| {r['model']} | {h['translations'] - h['refused_too_long']} ({h['refused_too_long']}) | "
+                           f"{pct(h['above_fact_threshold_zero'])} | {pct(h['above_fact_threshold_rate'])} | "
+                           f"{pct(h['above_person_threshold_zero'])} | {pct(h['above_person_threshold_rate'])} | "
+                           f"{h['lowest']:.3f}, {h['median']:.3f} |")
     return "\n".join(out) + "\n"
 
 

@@ -93,6 +93,28 @@ against easy and hard decoys separately:
   two thresholds of fact records against easy decoys. They are not used to set anything, since
   guards will later be replayed on those runs.
 
+## Amendment of 22 November, made before any score was computed
+
+Made after Ayman Ketat's check of the protocol as pushed (`311a9ad`; `ef5fb67` only corrected the
+date) and requirements revision 3.3. No score had been computed and no result was committed. The
+sections above are left as first written; where they differ from this section, this section holds.
+
+- **The bound counts distinct decoy texts, not comparisons.** Comparisons that reuse the same texts
+  are not independent trials. The 40,000 easy comparisons of fact records reuse 200 ordinary
+  lines: none of them matching bounds the rate for new ordinary text at about 3/200 = 1.5 %
+  (95 %), not 0.0075 %. The per-comparison figure describes these 200 lines only. The same holds
+  for hard decoys, which are filled from 50 records of each kind: about 3/50 = 6 %. The sentence
+  under "The measures" that gives 0.1 % for 3,000 comparisons and 0.0075 % for 40,000 is withdrawn.
+  A claim at 0.1 % would need about 3,000 distinct decoy texts, which this pair set does not have.
+- **Decoys are also reported per unit.** A unit is an ordinary line (easy) or a decoy record
+  (hard). A unit matches if it exceeds the threshold against any source. The tables give the
+  number of distinct units, the bound that follows, and how many units match at the threshold
+  that 0.1 % of the comparisons exceed. (Above the highest decoy score no unit matches, by definition.)
+- **"Recall at 0.1 %"** stays as defined, a threshold on comparisons. It is a description of this
+  pair set, not a bound on the false-match rate of new text.
+- **The held-out row** is reported at the easy-decoy thresholds of person records as well as of
+  fact records: the translations of 18 November are of an employee's name and national ID.
+
 ## What is expected
 
 - Hard decoys defeat every model: a sink template filled with another record differs from the
