@@ -207,7 +207,8 @@ def cmd_replay(args) -> int:
     run, out = Path(args.run), Path(args.out) if args.out else None
     if out and run.resolve() in out.resolve().parents:
         raise TestbedError("--out is inside the run folder; the folder is never changed, choose another place")
-    result = replay_run(run, args.guard, Path(args.policy) if args.policy else None)
+    result = replay_run(run, args.guard, Path(args.policy) if args.policy else None, exact=args.exact,
+                        embedder=args.embedder, embed_cache=Path(args.embed_cache) if args.embed_cache else None)
     print(replayed(result))
     if out:
         with open(out, "w", encoding="utf-8") as f:
@@ -300,6 +301,12 @@ def main(argv: list[str] | None = None) -> int:
     sp.add_argument("--guard", help="a built-in guard or an installed plugin guard (default: the run's guard)")
     sp.add_argument("--policy", help="a policy file, YAML or JSON, laid over the default policy (default: the run's policy.json)")
     sp.add_argument("--out", help="write one line per decision to this file, after a line describing the replay")
+    sp.add_argument("--exact", action="store_true",
+                    help="reproduce a live run: every vector must be one the run recorded (embeddings.jsonl); "
+                         "a missing one is an error")
+    sp.add_argument("--embedder", help="an embedding model for a run that was made without one (computed on this machine)")
+    sp.add_argument("--embed-cache", help="where vectors computed at replay are kept (default: next to the model files; "
+                                          "never in the run folder)")
     sp.set_defaults(fn=cmd_replay)
 
     sp = sub.add_parser("web", help="local web UI to configure and run testbeds")

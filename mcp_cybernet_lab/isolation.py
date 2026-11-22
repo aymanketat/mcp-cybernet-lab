@@ -11,6 +11,11 @@ client container (netprobe.py, sent to it on standard input) and must find that
   - the relay has one open port and leads to one host;
   - the gateway is reachable.
 
+With an embedder (`gateway.embedder`), the embedder is one more service no client may reach, and
+three more containers are probed: every server must not reach it, by name or by address; the
+embedder itself must have no default route and reach no outside host; and the gateway must get
+an answer from it that names the testbed's model.
+
 No tokens are spent: the model API is only asked for its model list. Run it after `mcl up` and
 before `mcl run`; it exits with status 1 if any check has another outcome.
 """
@@ -23,9 +28,9 @@ import subprocess
 from pathlib import Path
 from urllib.parse import urlsplit
 
-from .compose import GATEWAY_NET, HTTP_PORT, LLM_PORT
+from .compose import EMBED_NET, GATEWAY_NET, HTTP_PORT, LLM_PORT, embedder_spec
 from .loader import Loaded, TestbedError
-from .schema import LLM_EGRESS, LLM_RELAY, Testbed
+from .schema import EMBEDDER, LLM_EGRESS, LLM_RELAY, Testbed
 
 OUTSIDE = "example.com"  # reserved for documentation (RFC 2606): an outside host that is safe to name
 PUBLIC_ADDRESS = "1.1.1.1"
@@ -71,18 +76,37 @@ def plan(tb: Testbed, addr: dict[str, dict[str, list[str]]], outside_address: st
     if tb.llm.egress == "relay":
         relay = {"addresses": sorted(addr.get(LLM_RELAY, {}).get(GATEWAY_NET, []))}
         targets.append(closed("relay exit", LLM_EGRESS, LLM_PORT))
+    if tb.gateway.embedder != "none":
+        targets.append(closed("embedder", EMBEDDER, HTTP_PORT))
     return {"gateway": f"http://gateway:{HTTP_PORT}/", "model": model, "relay": relay, "closed": targets,
             "outside": {"name": OUTSIDE, "address": outside_address, "public_address": PUBLIC_ADDRESS}}
 
 
+def embedder_plans(tb: Testbed, addr: dict[str, dict[str, list[str]]], outside_address: str | None) -> list[tuple]:
+    """(service, role, plan) for the probes outside the clients that an embedder adds; none without one."""
+    spec = embedder_spec(tb)
+    if not spec:
+        return []
+    outside = {"name": OUTSIDE, "address": outside_address, "public_address": PUBLIC_ADDRESS}
+    target = {"what": "embedder", "host": EMBEDDER, "port": HTTP_PORT,
+              "addresses": sorted(addr.get(EMBEDDER, {}).get(EMBED_NET, []))}
+    plans = [(s.id, "server", {"role": "server", "closed": [target]}) for s in tb.servers if s.transport == "http"]
+    plans.append((EMBEDDER, "embedder", {"role": "embedder", "outside": outside}))
+    plans.append(("gateway", "gateway", {"role": "gateway", "embedder": {
+        "url": f"http://{EMBEDDER}:{HTTP_PORT}", "model": spec["model"], "revision": spec["revision"]}}))
+    return plans
+
+
 def check(loaded: Loaded, build: Path) -> list[dict]:
-    """Run the probe in every client container: one {"client", "name", "ok", "detail"} per check."""
+    """Run the probe in every client container, and with an embedder in the servers, the embedder
+    and the gateway: one {"client", "name", "ok", "detail"} per check ("role" when not a client)."""
     tb = loaded.testbed
     if tb.gateway.guard == "none":
         raise TestbedError("check-isolation is for a testbed with a gateway; "
                            "without one, clients sit on the domain networks")
     addr = addresses(build)
-    missing = sorted(({c.id for c in tb.clients} | {"gateway"}) - set(addr))
+    missing = sorted(({c.id for c in tb.clients} | {"gateway"}
+                      | ({EMBEDDER} if tb.gateway.embedder != "none" else set())) - set(addr))
     if missing:
         raise TestbedError(f"containers not running: {missing}; run `mcl up` first")
     try:
@@ -102,15 +126,25 @@ def check(loaded: Loaded, build: Path) -> list[dict]:
                 found.append({"name": "the probe ran to its end", "ok": False,
                               "detail": tail[0] if tail else "no output"})
             results += [{"client": c.id if c.replicas == 1 else f"{c.id}[{i}]", **f} for f in found]
+    for service, role, service_plan in embedder_plans(tb, addr, outside):
+        r = subprocess.run(["docker", "compose", "-f", str(build / "docker-compose.yml"), "exec", "-T",
+                            "-e", "MCL_NETPROBE=" + json.dumps(service_plan), service, "python3", "-"],
+                           input=PROBE.read_text(encoding="utf-8"), capture_output=True, text=True)
+        found = [json.loads(line) for line in r.stdout.splitlines() if line.startswith("{")]
+        if r.returncode not in (0, 1) or not found:
+            tail = (r.stderr or r.stdout).strip().splitlines()[-1:]
+            found.append({"name": "the probe ran to its end", "ok": False, "detail": tail[0] if tail else "no output"})
+        results += [{"client": service, "role": role, **f} for f in found]
     return results
 
 
 def render(results: list[dict]) -> str:
     lines, client = [], None
     for r in results:
-        if r["client"] != client:
-            client = r["client"]
-            lines.append(f"client {client}")
+        if (r["client"], r.get("role")) != client:
+            client = (r["client"], r.get("role"))
+            role = r.get("role", "client")
+            lines.append(f"{role} {r['client']}" if role != r["client"] else role)
         lines.append(f"{'PASS' if r['ok'] else 'FAIL'}  {r['name']}: {r['detail']}")
     lines.append(f"{sum(r['ok'] for r in results)}/{len(results)} checks have the expected outcome")
     return "\n".join(lines)

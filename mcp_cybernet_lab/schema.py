@@ -27,6 +27,7 @@ LLM_ENDPOINTS = {  # where each provider's API lives; the agent and the transfor
     "ollama": "http://host.docker.internal:11434/v1",
 }
 LLM_RELAY, LLM_EGRESS = "llm-relay", "llm-egress"  # the two containers of `llm.egress: relay`
+EMBEDDER = "embedder"  # the service that holds a testbed's embedding model
 
 
 class Strict(BaseModel):
@@ -148,6 +149,9 @@ class Gateway(Strict):
     plugins: list[str] = []  # guard plugins: package folders (with a pyproject.toml), relative to the
     # testbed file. Copied into the gateway image and installed there without dependencies.
     log_all: bool = True
+    embedder: str = "none"  # none, or a pinned embedding model (embedding.MODELS: e5-small, labse, bge-m3,
+    # minilm-paraphrase). Adds the service `embedder` on a network of its own with the gateway, and
+    # gives guards `context.embed`. The name is checked at `mcl build`.
 
     _guard = field_validator("guard")(_check_id)
 

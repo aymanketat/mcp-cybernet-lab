@@ -29,10 +29,10 @@ from urllib.parse import urlsplit
 
 import yaml
 
-from . import __version__
+from . import __version__, embedding
 from .guards import default_policy, files_sha256, guard_info, installed_guards, is_code, name_clashes
 from .loader import Loaded, TestbedError, check_buildable
-from .schema import LLM_EGRESS, LLM_RELAY, Client, Server, Service, Testbed
+from .schema import EMBEDDER, LLM_EGRESS, LLM_RELAY, Client, Server, Service, Testbed
 from .seeding import canary_file_text, make_canaries, stream
 
 REPO = Path(__file__).resolve().parent.parent
@@ -48,6 +48,10 @@ MCP_PROXY = "mcp-proxy==0.13.0"
 BASE_IMAGE = "node:22-bookworm-slim"
 UV_IMAGE = "ghcr.io/astral-sh/uv:0.9.5"
 GATEWAY_NET = "net-gateway"
+EMBED_NET = "net-embed"  # the gateway and the embedder, and nobody else
+EMBEDDER_IMAGE = "python:3.12-slim-bookworm"
+EMBEDDER_PYTHON = ("3.12", "cp312")  # the Python of that image: the wheels are chosen for it on the host
+EMBEDDER_MODULES = ["embedding.py", "embedserver.py"]  # not standard library only: their own image
 
 
 def network_name(domain: str) -> str:
@@ -303,17 +307,110 @@ def gateway_plugin_lines(tb: Testbed, wheels: list[str], info: dict | None) -> l
             f"RUN python3 /opt/mcl/guards.py check {tb.gateway.guard}" + (f" {info['tree_sha256']}" if info else "")]
 
 
+def embedder_spec(tb: Testbed) -> dict | None:
+    """The testbed's embedding model as the gateway and the manifest name it; None without one."""
+    name = tb.gateway.embedder
+    if name == "none":
+        return None
+    model = embedding.MODELS[name]
+    return {"model": name, "repo": model["repo"], "revision": model["revision"], "dim": model["dim"],
+            "max_tokens": model["max_tokens"], "files": dict(model["files"])}
+
+
+def embedder_dockerfile(name: str) -> str:
+    """The embedder image: the pinned packages, the lab's two modules, and the model's files.
+
+    Everything comes from the build context: the image build fetches nothing but its base image.
+    The packages are wheels `mcl build` downloaded on the host for the image's Python. The model's
+    files were checked against their pinned hashes there, and the image build checks them again,
+    so a file that is not the pinned one fails the build. The container then runs without network
+    access, as an unprivileged user, on a read-only file system.
+    """
+    return "\n".join([
+        f"FROM {EMBEDDER_IMAGE}",
+        # The wheels are mounted for this one step, so they are not a layer of the image.
+        "RUN --mount=type=bind,source=wheels,target=/wheels pip install --no-cache-dir --no-index "
+        "--find-links /wheels " + " ".join(embedding.REQUIREMENTS),
+        "COPY " + " ".join(EMBEDDER_MODULES) + " /opt/mcl/",
+        "COPY models /models",
+        "ENV MCL_EMBEDDING_MODELS=/models",
+        f"RUN python3 /opt/mcl/embedding.py verify {name}",
+        f'CMD ["python3", "/opt/mcl/embedserver.py", "{name}"]',
+    ]) + "\n"
+
+
+def download_wheels(dest: Path) -> None:
+    """The wheels of embedding.REQUIREMENTS and what they need, for the embedder image's Python
+    and this machine's processor, downloaded here with pip."""
+    import platform
+    machine = platform.machine().lower().replace("amd64", "x86_64").replace("arm64", "aarch64")
+    version, abi = EMBEDDER_PYTHON
+    cmd = [sys.executable, "-m", "pip", "download", "--quiet", "--dest", str(dest), "--only-binary", ":all:",
+           "--python-version", version, "--implementation", "cp", "--abi", abi, "--abi", "abi3", "--abi", "none"]
+    for tag in ("manylinux_2_28", "manylinux_2_27", "manylinux_2_17", "manylinux2014"):
+        cmd += ["--platform", f"{tag}_{machine}"]
+    r = subprocess.run(cmd + embedding.REQUIREMENTS, capture_output=True, text=True)
+    if r.returncode != 0:
+        raise TestbedError(f"gateway.embedder: the packages of the embedder image could not be downloaded "
+                           f"({sys.executable} -m pip download):\n{(r.stderr or r.stdout).strip()[-1500:]}")
+
+
+def embedder_context(name: str, out: Path) -> None:
+    """Put the model's files, the two modules and the packages' wheels into the embedder's own build context.
+
+    The files are taken from the cache on this machine (fetched now if they are not there yet) and
+    verified against their pinned hashes first. Linked where the file system allows, else copied.
+    """
+    try:
+        source = embedding.fetch(name, log=lambda line: print(line, flush=True))
+    except embedding.EmbeddingError as e:
+        raise TestbedError(f"gateway.embedder: {e}") from None
+    context = out / "embedder"
+    target = context / "models" / name / embedding.MODELS[name]["revision"]
+    for path in embedding.MODELS[name]["files"]:
+        (target / path).parent.mkdir(parents=True, exist_ok=True)
+        try:
+            (target / path).hardlink_to(source / path)
+        except OSError:
+            shutil.copy(source / path, target / path)
+    for m in EMBEDDER_MODULES:
+        shutil.copy(PACKAGE / m, context / m)
+    (context / "wheels").mkdir()
+    download_wheels(context / "wheels")
+
+
+def embedder_service(tb: Testbed) -> dict:
+    """No environment, no volume, one network: it holds no key and sees no run data, only texts."""
+    return {
+        "build": {"context": "embedder", "dockerfile": "../dockerfiles/embedder.Dockerfile"},
+        "image": f"mcl-{tb.testbed}-{EMBEDDER}",
+        "networks": [EMBED_NET],
+        "labels": {"mcl.role": "embedder", "mcl.embedder": tb.gateway.embedder},
+        "user": "65534:65534",  # nobody
+        "cap_drop": ["ALL"],
+        "read_only": True,
+        # Loading a model takes seconds: `up --wait` and the gateway wait until it answers.
+        "healthcheck": {"test": ["CMD", "python3", "-c", "import urllib.request; urllib.request.urlopen("
+                                 f"'http://127.0.0.1:{HTTP_PORT}/health', timeout=3)"],
+                        "interval": "3s", "timeout": "5s", "retries": 60, "start_period": "5s"},
+    }
+
+
 def gateway_service(tb: Testbed, runs: Path) -> dict:
     http = [s for s in tb.servers if s.transport == "http"]
     config = {"guard": tb.gateway.guard,
               "servers": {s.id: {"label": s.label, "domain": s.domain} for s in http}}
-    return {
+    spec = embedder_spec(tb)
+    if spec:  # only then: without an embedder the gateway's configuration is what it was
+        config["embedder"] = {"model": spec["model"], "revision": spec["revision"],
+                              "url": f"http://{EMBEDDER}:{HTTP_PORT}"}
+    return ({"depends_on": {EMBEDDER: {"condition": "service_healthy"}}} if spec else {}) | {
         "build": {"context": "context", "dockerfile": "../dockerfiles/gateway.Dockerfile"},
         "image": f"mcl-{tb.testbed}-gateway",
         "command": ["python3", "/opt/mcl/gateway.py", "serve"],
         "environment": {"MCL_GATEWAY": json.dumps(config)},
         "volumes": ["./policy:/policy", f"{runs}:/runs"],
-        "networks": sorted({network_name(s.domain) for s in http} | {GATEWAY_NET}),
+        "networks": sorted({network_name(s.domain) for s in http} | {GATEWAY_NET} | ({EMBED_NET} if spec else set())),
         "labels": {"mcl.role": "gateway", "mcl.guard": tb.gateway.guard},
     }
 
@@ -459,6 +556,10 @@ def build(loaded: Loaded, out: Path, runs: Path | None = None) -> Path:
             [], ["python3", "/opt/mcl/gateway.py", "serve"],
             extra=gateway_plugin_lines(tb, [p["wheel"] for p in plugins], guard_plugin)))
         services["gateway"] = gateway_service(tb, runs)
+    if tb.gateway.embedder != "none":
+        embedder_context(tb.gateway.embedder, out)
+        (out / "dockerfiles" / "embedder.Dockerfile").write_text(embedder_dockerfile(tb.gateway.embedder))
+        services[EMBEDDER] = embedder_service(tb)
     if any(v.builtin for v in tb.services):
         (out / "dockerfiles" / "sink.Dockerfile").write_text(dockerfile([], ["python3", "/opt/mcl/sink.py"]))
     for v in tb.services:
@@ -474,6 +575,8 @@ def build(loaded: Loaded, out: Path, runs: Path | None = None) -> Path:
                 if network_name(d.id) in used}
     if GATEWAY_NET in used:
         networks[GATEWAY_NET] = {"internal": True}  # clients reach only the gateway
+    if EMBED_NET in used:
+        networks[EMBED_NET] = {"internal": True}  # the embedder has no way out
     compose = {"name": f"mcl-{tb.testbed}", "services": services}
     if networks:
         compose["networks"] = networks
@@ -500,6 +603,9 @@ def build(loaded: Loaded, out: Path, runs: Path | None = None) -> Path:
         # fails. null = a built-in guard. plugins: every wheel built from gateway.plugins.
         "guard_plugin": guard_plugin,
         "plugins": plugins,
+        # The embedding model of the testbed, pinned: revision and the SHA-256 of every file. null = none.
+        "embedder": (embedder_spec(tb) or {}) | {"wheels": sorted(
+            w.name for w in (out / "embedder" / "wheels").glob("*.whl"))} if embedder_spec(tb) else None,
         "domains": [d.model_dump() for d in tb.domains],
         "servers": [{"id": s.id, "package": s.package, "path": s.path,
                      "source_sha256": tree_sha256(out / "context" / "servers" / s.id) if s.path else None,

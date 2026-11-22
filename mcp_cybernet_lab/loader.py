@@ -10,9 +10,10 @@ from pathlib import Path
 import yaml
 from pydantic import ValidationError
 
+from . import embedding
 from .guards import GUARDS, UnknownGuard, installed_clashes
 from .guards import check as check_guard
-from .schema import Testbed
+from .schema import EMBEDDER, Testbed
 
 
 class TestbedError(Exception):
@@ -68,6 +69,16 @@ def load_testbed(path: str | Path) -> Loaded:
     names = [(path.parent / p).resolve().name for p in tb.gateway.plugins]
     if len(set(names)) < len(names):
         raise TestbedError(f"gateway.plugins: two folders have the same name ({sorted(names)})")
+    if tb.gateway.embedder != "none":
+        if tb.gateway.guard == "none":
+            raise TestbedError("gateway.embedder needs a gateway (gateway.guard is none)")
+        if tb.gateway.embedder not in embedding.MODELS:
+            raise TestbedError(f"gateway.embedder '{tb.gateway.embedder}': not a pinned embedding model "
+                               f"({', '.join(embedding.MODELS)})")
+        taken = {EMBEDDER} & {x.id for x in [*tb.domains, *tb.servers, *tb.clients, *tb.services]}
+        if taken:
+            raise TestbedError(f"gateway.embedder: the id '{EMBEDDER}' is used by this testbed; "
+                               f"the embedder service needs it")
     if tb.gateway.plugins and tb.gateway.guard == "none":
         raise TestbedError("gateway.plugins needs a gateway (gateway.guard is none)")
     if tb.gateway.guard != "none":  # other clashes among installed plugins do not touch this testbed

@@ -1,5 +1,9 @@
 #!/usr/bin/env python3
-"""What a client container can and cannot reach. The inside half of `mcl check-isolation`.
+"""What a container of a guarded testbed can and cannot reach. The inside half of `mcl check-isolation`.
+
+Mostly run in the client containers. With an embedder in the testbed it is also run, with another
+role in its plan, in every server (which must not reach the embedder), in the embedder (which must
+have no way out) and in the gateway (which must reach it).
 
 `mcl check-isolation` sends this file to `python3 -` in each client container, so it is part of
 no image, and describes the testbed in the environment variable MCL_NETPROBE (JSON, written by
@@ -98,7 +102,57 @@ def model_api() -> tuple[bool, str]:
     return listed or not ids, f"HTTP 200; {len(ids)} models listed; '{MODEL['name']}' listed: {listed}"
 
 
+def closed_targets() -> None:
+    """Every target of PLAN["closed"] neither resolves nor answers at its addresses."""
+    for target in PLAN["closed"]:
+        found, detail = resolve(target["host"])
+        check(f"{target['what']} `{target['host']}` does not resolve", not found, detail)
+        if not target["addresses"]:
+            check(f"{target['what']} `{target['host']}` by address is unreachable", False,
+                  "its container has no address (not running?), so nothing was tested")
+        for address in target["addresses"]:
+            state, detail = connect(address, target["port"])
+            check(f"{target['what']} `{target['host']}` by address ({address}:{target['port']}) is unreachable",
+                  state == "unreachable", detail)
+
+
+def no_way_out(who: str) -> None:
+    """No default route, and no outside host by name or by address."""
+    outside = PLAN["outside"]
+    with open("/proc/net/route", encoding="ascii") as f:
+        routes = default_routes(f.read())
+    check(f"no default route in the {who}", not routes, f"default route on {routes}" if routes else "none")
+    found, detail = resolve(outside["name"])
+    check(f"{outside['name']} does not resolve", not found, detail)
+    for address in filter(None, (outside.get("address"), outside["public_address"])):
+        state, detail = connect(address, 443)
+        check(f"an outside address ({address}:443) is unreachable", state == "unreachable", detail)
+
+
+def embedder_answers() -> None:
+    """The gateway's side: the embedder answers, and is the model of this testbed."""
+    want = PLAN["embedder"]
+    try:
+        with urllib.request.urlopen(want["url"] + "/health", timeout=10) as r:
+            got = json.loads(r.read())
+        same = (got.get("model"), got.get("revision")) == (want["model"], want["revision"])
+        check("the embedder answers the gateway with the testbed's model", same,
+              f"{got.get('model')} at {str(got.get('revision'))[:12]}, {len(got.get('files') or {})} files verified")
+    except (OSError, ValueError) as e:
+        check("the embedder answers the gateway with the testbed's model", False, why(e))
+
+
 def main() -> int:
+    role = PLAN.get("role", "client")
+    if role == "server":       # a server must not reach the embedder
+        closed_targets()
+        return 1 if FAILED else 0
+    if role == "embedder":     # the embedder has no way out
+        no_way_out("embedder")
+        return 1 if FAILED else 0
+    if role == "gateway":      # and only the gateway reaches it
+        embedder_answers()
+        return 1 if FAILED else 0
     relay = PLAN.get("relay")
     outside = PLAN["outside"]
 
@@ -134,16 +188,7 @@ def main() -> int:
         check(f"https://{name}/ does not answer", False, "answered")
     except (OSError, ValueError) as e:
         check(f"https://{name}/ does not answer", True, why(e))
-    for target in PLAN["closed"]:
-        found, detail = resolve(target["host"])
-        check(f"{target['what']} `{target['host']}` does not resolve", not found, detail)
-        if not target["addresses"]:
-            check(f"{target['what']} `{target['host']}` by address is unreachable", False,
-                  "its container has no address (not running?), so nothing was tested")
-        for address in target["addresses"]:
-            state, detail = connect(address, target["port"])
-            check(f"{target['what']} `{target['host']}` by address ({address}:{target['port']}) is unreachable",
-                  state == "unreachable", detail)
+    closed_targets()
 
     # --- the relay offers one port and one destination ---------------------------------
     for address in (relay or {}).get("addresses", []):

@@ -16,6 +16,11 @@ client gets HTTP 502. So every call that was put to the guard is in the log, wha
 A result that returns after the next task has started belongs to no guard any more: its line is
 written into the log that is open, without call ID and step numbers, and replay does not apply it.
 
+With an embedder in the testbed (MCL_GATEWAY "embedder": {"model", "revision", "url"}), a guard's
+`context.embed` asks that service, and every answer is appended to embeddings.jsonl next to the
+task's log, keyed by the SHA-256 of the text; the text is not written. A guard embeds inside its
+hooks, which run under the gateway's lock: calls wait while a text is embedded.
+
 A guard that raises fails closed, and the line says so in `guard_error` (null otherwise). Raised
 on the call: the call is blocked, with the reason "guard error". Raised on the result: the tool has
 run, the decision stays "allow", the result is kept in the log and withheld from the client
@@ -45,7 +50,8 @@ from http.server import BaseHTTPRequestHandler
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
-from guards import Context, Session, guard_info, make_guard  # noqa: E402
+from guards import (Context, EmbeddingCache, EmbedError, Session, TextTooLong, guard_info,  # noqa: E402
+                    make_guard, unpack_vector)
 from httpproxy import Proxy, jsonrpc_error, parse_messages, serve  # noqa: E402
 from mcpclient import result_text  # noqa: E402
 
@@ -53,6 +59,7 @@ CONFIG = json.loads(os.environ.get("MCL_GATEWAY", '{"guard": "passthrough", "ser
 POLICY_FILE = Path(os.environ.get("MCL_POLICY_FILE", "/policy/current.json"))
 BLOCKED = -32001
 WITHHELD = -32002
+EMBED_TIMEOUT_S = 120
 
 
 class State:
@@ -60,6 +67,7 @@ class State:
     guard = None
     session = None  # the guard steps of the current task, numbered
     plugins: list = []  # where the guard comes from, when it is a plugin
+    embeddings = None  # the task's vector cache, with an embedder
     log = None
     task = None
     t0 = time.monotonic()
@@ -72,6 +80,33 @@ def load_guard():
     info = guard_info(CONFIG["guard"])
     State.plugins = [info] if info else []
     return policy.get("version")
+
+
+def ask_embedder(text: str) -> tuple:
+    """One text to the embedder service: its vector, or TextTooLong, or EmbedError if it does not answer."""
+    spec = CONFIG["embedder"]
+    request = urllib.request.Request(spec["url"] + "/embed", data=json.dumps({"texts": [text]}).encode(),
+                                     headers={"Content-Type": "application/json"}, method="POST")
+    try:
+        with urllib.request.urlopen(request, timeout=EMBED_TIMEOUT_S) as r:
+            answer = json.loads(r.read())
+        result = answer["results"][0]
+    except (OSError, ValueError, KeyError, IndexError) as e:
+        raise EmbedError(f"the embedder did not answer ({type(e).__name__})") from None
+    if (answer.get("model"), answer.get("revision")) != (spec["model"], spec["revision"]):
+        raise EmbedError("the embedder is not the model of this testbed")
+    if result.get("error") == "too_long":
+        raise TextTooLong(result.get("detail", ""))
+    return unpack_vector(result["vector"])
+
+
+def new_task_embeddings(log_path) -> None:
+    """A fresh vector cache for a task, written next to its log. Nothing without an embedder."""
+    spec = CONFIG.get("embedder")
+    if spec and State.guard is not None and getattr(State.guard, "context", None) is not None:
+        State.embeddings = EmbeddingCache(spec["model"], spec["revision"], compute=ask_embedder,
+                                          path=log_path.with_name("embeddings.jsonl") if log_path else None)
+        State.guard.context.embed = State.embeddings.embed
 
 
 def labels() -> dict:
@@ -188,8 +223,11 @@ class Control(BaseHTTPRequestHandler):
                 path = Path(cmd["log"])
                 path.parent.mkdir(parents=True, exist_ok=True)
                 State.log, State.task, State.t0 = open(path, "w", encoding="utf-8"), cmd.get("task"), time.monotonic()
+                new_task_embeddings(path)
                 write(type="start", guard=CONFIG["guard"], policy_version=version,
-                      labels=labels(), plugins=State.plugins)
+                      labels=labels(), plugins=State.plugins,
+                      embedder={k: CONFIG["embedder"][k] for k in ("model", "revision")}
+                      if CONFIG.get("embedder") else None)
         body = b'{"ok": true}'
         self.send_response(200)
         self.send_header("Content-Length", str(len(body)))
@@ -211,6 +249,7 @@ def main():
     if sys.argv[1:2] == ["ctl"]:
         return ctl(sys.argv[2:])
     load_guard()
+    new_task_embeddings(None)
     threading.Thread(target=serve(Control, 9090, "127.0.0.1").serve_forever, daemon=True).start()
     print(f"mcl-gateway: guard {CONFIG['guard']}, servers {sorted(CONFIG['servers'])}", flush=True)
     serve(Gateway, 8080).serve_forever()

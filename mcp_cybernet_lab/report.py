@@ -212,6 +212,12 @@ def replayed(r: dict) -> str:
         return c[key] + (", result withheld" if c[f"{key}_withheld"] else "") + (
             f", guard raised {c[f'{key}_error']}" if c[f"{key}_error"] else "")
 
+    e = r.get("embeddings")
+    if e:
+        lines.insert(3, f"  embedding model {e['model']} at {e['revision'][:12]}: {e['from_run']} texts with the vector "
+                        f"the run recorded ({e['recorded_in_run']} in the run), {e['computed_at_replay']} computed here"
+                        + (f" and kept in {e['cache']}" if e["computed_at_replay"] else "")
+                        + ("; --exact: nothing may be computed" if e["exact"] else ""))
     if r.get("not_replayed"):
         lines.append(f"  not replayed: {len(r['not_replayed'])} lines without step numbers (results that came back "
                      f"after their task had ended): "

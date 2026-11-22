@@ -217,7 +217,78 @@ def policy_sha256(policy: dict) -> str:
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
 
-def replay_run(run: Path, guard: str | None = None, policy_file: Path | None = None) -> dict:
+def host_embedder(model: str):
+    """compute(text) for an EmbeddingCache, from the pinned model on this machine. Loaded on first use."""
+    state = {}
+
+    def compute(text: str) -> tuple:
+        from . import embedding
+        if "embedder" not in state:
+            try:
+                state["embedder"] = embedding.Embedder(model)
+            except ImportError as e:
+                raise TestbedError(f"a vector is not in the run and has to be computed here: {e}. "
+                                   f"Install the extra (pip install -e .[embed])") from None
+            except embedding.EmbeddingError as e:
+                raise TestbedError(str(e)) from None
+        try:
+            return tuple(float(x) for x in state["embedder"].embed_one(text))
+        except embedding.TooLong as e:
+            raise guards.TextTooLong(str(e)) from None
+
+    return compute
+
+
+def replay_embeddings(run: Path, manifest: dict, model: str | None, exact: bool, cache: Path | None):
+    """The `embed` of a replay: an EmbeddingCache, or None when no embedding model is in play.
+
+    The model is the run's own (manifest), or `model` for a run that had none. What the run
+    recorded (<task run>/embeddings.jsonl) is used first. A text that is not there is computed on
+    this machine from the same pinned files and kept in a cache outside the run folder, unless
+    `exact`: then nothing is computed, and the caller refuses a replay that missed a vector.
+    """
+    from . import embedding
+    ran = (manifest.get("embedder") or {}).get("model")
+    name = model or ran
+    if not name:
+        return None
+    if name not in embedding.MODELS:
+        raise TestbedError(f"embedding model '{name}': not one of {', '.join(embedding.MODELS)}")
+    revision = embedding.MODELS[name]["revision"]
+    if name == ran and manifest["embedder"]["revision"] != revision:
+        raise TestbedError(f"the run used {name} at revision {manifest['embedder']['revision']}; "
+                           f"this version of the lab pins {revision}")
+    known, recorded = {}, 0
+    if name == ran:
+        for f in sorted(run.glob("*/embeddings.jsonl")):
+            known |= guards.EmbeddingCache.read(f, name, revision)
+        recorded = len(known)
+    if exact:
+        return guards.EmbeddingCache(name, revision, known=known), recorded
+    cache = cache or embedding.default_root() / "replay" / f"{name}-{revision[:12]}.jsonl"
+    if run.resolve() in cache.resolve().parents:
+        raise TestbedError("the cache for vectors computed at replay is inside the run folder; "
+                           "the folder is never changed, choose another place")
+    cache.parent.mkdir(parents=True, exist_ok=True)
+    earlier = guards.EmbeddingCache.read(cache, name, revision)  # computed at an earlier replay: not the run's
+    store = guards.EmbeddingCache(name, revision, compute=host_embedder(name), path=cache,
+                                  known=known, mark={"computed_at": "replay"})
+    real = store.compute
+
+    def compute(text: str) -> tuple:  # an earlier replay's vector is as good as computing it again
+        entry = earlier.get(guards.text_sha256(text))
+        if entry and entry.get("vector"):
+            return guards.unpack_vector(entry["vector"])
+        if entry and entry.get("error") == "too_long":
+            raise guards.TextTooLong(entry.get("detail", ""))
+        return real(text)
+
+    store.compute = compute
+    return store, recorded
+
+
+def replay_run(run: Path, guard: str | None = None, policy_file: Path | None = None, exact: bool = False,
+               embedder: str | None = None, embed_cache: Path | None = None) -> dict:
     """Put the tool calls a gateway logged in a run to a guard again, offline.
 
     By default the guard and the policy are the run's own (manifest.json, policy.json), which
@@ -225,6 +296,11 @@ def replay_run(run: Path, guard: str | None = None, policy_file: Path | None = N
     file is laid over the default policy for the run's servers, as `mcl build` does. With the
     run's own guard, when that guard is a plugin, the code installed here must be the code that
     ran: a different tree hash is refused. Nothing in the folder is changed.
+
+    A guard that embeds gets the vectors the run recorded (see replay_embeddings): no embedder
+    service is needed. `exact` is for reproducing a live run: a vector the run did not record is
+    then an error, not something to compute here. `embedder` names a model for a run made
+    without one; `embed_cache` is where vectors computed here are kept.
 
     Returns the guard, where it comes from, the policy and its hash, and one entry per tool call.
     """
@@ -274,9 +350,11 @@ def replay_run(run: Path, guard: str | None = None, policy_file: Path | None = N
     clash = guards.installed_clashes().get(name)
     if clash:
         raise TestbedError(f"{clash}: it is not clear which guard to replay. Uninstall or rename a plugin")
+    found = replay_embeddings(run, manifest, embedder, exact, embed_cache)
+    store, recorded = found if found else (None, 0)
     calls, not_replayed = [], []
     for task, lines in events.items():
-        for e in guards.replay(guard_object, lines, labels):
+        for e in guards.replay(guard_object, lines, labels, store.embed if store else None):
             if e["replay_skipped"]:
                 not_replayed.append({"task": task, "server": e["server"], "tool": e["tool"]})
                 continue
@@ -287,7 +365,18 @@ def replay_run(run: Path, guard: str | None = None, policy_file: Path | None = N
                           # A guard that raised: where and what, and whether the result was withheld.
                           "logged_error": e.get("guard_error"), "replayed_error": e["replay_error"],
                           "logged_withheld": bool(e.get("result_withheld")), "replayed_withheld": e["replay_withheld"]})
+    embeddings = None
+    if store:
+        embeddings = {"model": store.model, "revision": store.revision, "recorded_in_run": recorded,
+                      "from_run": len(store.used - store.computed), "computed_at_replay": len(store.computed),
+                      "missing": len(store.missing - store.computed), "exact": exact,
+                      "cache": None if exact else str(store.path)}
+        if exact and store.missing:
+            raise TestbedError(
+                f"--exact: the run recorded no vector for {len(store.missing)} text(s) the guard embedded. "
+                f"This replay is not the live run again. Without --exact the vectors are computed here")
     return {"run": run.name, "testbed": manifest.get("testbed"), "guard": name, "guard_ran": ran,
+            "embeddings": embeddings,
             "guard_plugin": info, "policy": source, "policy_version": policy.get("version"),
             "policy_sha256": policy_sha256(policy), "own": name == ran and not policy_file,
             "task_runs": len(events), "calls": calls,

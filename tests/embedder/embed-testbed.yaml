@@ -1,0 +1,41 @@
+# Testbed for the live check of the embedder (tests/embedder/live_check.py): a private database and
+# a public paste site behind a gateway whose guard, dummy-embed from the test plugin, asks the
+# embedder for vectors. The smallest of the pinned models; no language model: the check makes the
+# tool calls itself.
+testbed: embed-check
+version: 1
+seed: 0
+
+defaults:
+  transport: http
+
+domains:
+  - id: corp
+  - id: public
+    internet: true
+
+servers:
+  - id: hr
+    runtime: local
+    path: ../../servers/sample-db
+    args: ["--db", "/data/hr/company.db"]
+    domain: corp
+    label: private
+  - id: paste
+    runtime: local
+    path: ../../servers/public-paste
+    args: ["--store", "/data/paste/pastes.jsonl"]
+    domain: public
+    label: public
+    plant_canaries: false
+
+clients:
+  - id: agent
+    harness: none
+    servers: [hr, paste]
+
+gateway:
+  guard: dummy-embed
+  policy: embed-policy.yaml
+  plugins: [../plugins/dummy-guard]
+  embedder: minilm-paraphrase

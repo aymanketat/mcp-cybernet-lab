@@ -38,6 +38,9 @@ import urllib.request
 from pathlib import Path
 
 HUB = "https://huggingface.co"
+# What the module needs beside the standard library, in the versions the calibration was run with.
+# The same list is the install extra `embed` and what the embedder image installs.
+REQUIREMENTS = ["numpy==2.5.5", "onnxruntime==1.32.0", "tokenizers==0.23.3"]
 RETRIES = 8  # attempts per file; each goes on from the bytes already there
 MODELS = {
     "e5-small": {

@@ -16,8 +16,11 @@ guard's name). Like the built-in guards it imports only the standard library and
 mcp_cybernet_lab.guards. `gateway.plugins` in a testbed copies it into the gateway image; installed
 on the host, the same code replays logged runs. A built-in name always means the built-in guard.
 
-What a guard is told beside the call itself is in `guard.context`: the label of every server and
-the ID of the call being applied (see Context).
+What a guard is told beside the call itself is in `guard.context`: the label of every server, the
+ID of the call being applied, and `embed`, which turns texts into vectors (see Context). A guard
+does no I/O of its own: live, `embed` asks the testbed's embedder and every answer is written to
+the task's embeddings.jsonl; in replay the same answers are read back from that file
+(EmbeddingCache), so a replay sees the vectors its live run saw.
 
 A Session applies calls and results to a guard, for the gateway and for `replay` alike, and numbers
 the steps, so a replay can apply them in the order the live guard saw them.
@@ -30,9 +33,12 @@ Standard library only: this file is copied into the gateway image.
 from __future__ import annotations
 
 import ast
+import base64
 import hashlib
 import json
+import math
 import re
+import struct
 import sys
 from pathlib import Path
 
@@ -59,17 +65,42 @@ def default_policy(servers: dict[str, dict]) -> dict:
     }
 
 
+class EmbedError(Exception):
+    """A text could not be embedded: no embedder in this testbed, the embedder did not answer, or
+    (replay) no vector was recorded for the text."""
+
+
+class TextTooLong(EmbedError):
+    """The text has more tokens than the embedding model reads. It is refused, never cut: a guard
+    must know that the model did not see all of a text."""
+
+
+def no_embedder(texts: list[str]) -> list[tuple]:
+    raise EmbedError("this testbed has no embedder (gateway.embedder is none)")
+
+
+def cosine(a, b) -> float:
+    """Cosine of two vectors as `embed` returns them."""
+    dot = sum(x * y for x, y in zip(a, b))
+    return dot / (math.sqrt(sum(x * x for x in a)) * math.sqrt(sum(y * y for y in b)) or 1.0)
+
+
 class Context:
     """What a guard is told beside the call itself. The gateway fills it live, `replay` offline.
 
     labels    server id -> "private", "public" or "mixed", as the testbed declares them
     call_id   the ID of the call being applied: in on_call the call about to be sent, in on_result
               the call whose result this is. It links a result to its call.
+    embed     embed(texts) -> one vector (a tuple of floats, unit length) per text, from the
+              testbed's pinned embedding model. Raises TextTooLong for a text over the model's
+              token limit and EmbedError when there is no vector to be had. A guard that lets
+              either escape fails closed, like any guard that raises.
     """
 
-    def __init__(self, labels: dict[str, str] | None = None):
+    def __init__(self, labels: dict[str, str] | None = None, embed=None):
         self.labels = dict(labels or {})
         self.call_id: str | None = None
+        self.embed = embed or no_embedder
 
     def label(self, server: str) -> str | None:
         return self.labels.get(server)
@@ -276,6 +307,95 @@ def make_guard(name: str, policy: dict, context: Context | None = None):
     return guard
 
 
+def text_sha256(text: str) -> str:
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+
+def pack_vector(vector) -> str:
+    """A vector as text: its float32 values, little-endian, in base64. Exact both ways."""
+    return base64.b64encode(struct.pack(f"<{len(vector)}f", *vector)).decode("ascii")
+
+
+def unpack_vector(packed: str) -> tuple:
+    raw = base64.b64decode(packed)
+    return struct.unpack(f"<{len(raw) // 4}f", raw)
+
+
+class EmbeddingCache:
+    """Vectors by the SHA-256 of their text, for one model at one revision. The `embed` of a context.
+
+    Live, in the gateway: `compute` asks the embedder, and every answer, a vector or a refusal, is
+    appended to `path` (the task's embeddings.jsonl). The text itself is never written.
+    In replay: `known` holds what the run recorded; a text that is not there is counted in
+    `missing` and, if there is a `compute` (the model on this machine), computed, kept in `path`
+    (a cache outside the run folder) and counted in `computed`.
+
+    compute(text) -> a vector; raises TextTooLong or EmbedError. Each line of a file:
+      {"sha256", "model", "revision", "dim", "vector"}                       vector as pack_vector writes it
+      {"sha256", "model", "revision", "error": "too_long" | "unavailable", "detail"}
+    A recorded refusal is raised again with the same words, so a guard that failed on it live
+    fails the same way in replay.
+    """
+
+    def __init__(self, model: str, revision: str, compute=None, path=None, known: dict | None = None,
+                 mark: dict | None = None):
+        self.model, self.revision, self.compute, self.path = model, revision, compute, path
+        self.entries: dict[str, dict] = dict(known or {})
+        self.mark = mark or {}  # extra fields for lines written here, e.g. that they were computed at replay
+        self.used: set[str] = set()      # texts answered from what was known
+        self.computed: set[str] = set()  # texts computed here
+        self.missing: set[str] = set()   # texts that were not known (computed or not)
+
+    @staticmethod
+    def read(path, model: str, revision: str) -> dict:
+        """The lines of an embeddings file that are of this model at this revision, by text hash."""
+        out = {}
+        try:
+            lines = open(path, encoding="utf-8").read().splitlines()
+        except OSError:
+            return out
+        for line in lines:
+            try:
+                e = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if e.get("model") == model and e.get("revision") == revision and e.get("sha256"):
+                out[e["sha256"]] = e
+        return out
+
+    def _write(self, entry: dict) -> None:
+        if self.path is not None:
+            with open(self.path, "a", encoding="utf-8") as f:
+                f.write(json.dumps(entry | self.mark) + "\n")
+
+    def embed(self, texts: list[str]) -> list[tuple]:
+        out = []
+        for text in texts:
+            key = text_sha256(text)
+            entry = self.entries.get(key)
+            if entry is not None:
+                self.used.add(key)
+            else:
+                self.missing.add(key)
+                if self.compute is None:
+                    raise EmbedError("no vector was recorded for a text of this call")
+                entry = {"sha256": key, "model": self.model, "revision": self.revision}
+                try:
+                    vector = tuple(self.compute(text))
+                    entry |= {"dim": len(vector), "vector": pack_vector(vector)}
+                except TextTooLong as e:
+                    entry |= {"error": "too_long", "detail": str(e)}
+                except EmbedError as e:
+                    entry |= {"error": "unavailable", "detail": str(e)}
+                self.entries[key] = entry
+                self.computed.add(key)
+                self._write(entry)
+            if entry.get("error"):
+                raise (TextTooLong if entry["error"] == "too_long" else EmbedError)(entry.get("detail", ""))
+            out.append(unpack_vector(entry["vector"]))
+        return out
+
+
 GUARD_ERROR = "guard error"  # the reason of a call that is not allowed because its guard raised
 
 
@@ -335,13 +455,15 @@ class Session:
         return {"seq_result": seq, "error": error}
 
 
-def replay(guard, events: list[dict], labels: dict[str, str] | None = None) -> list[dict]:
+def replay(guard, events: list[dict], labels: dict[str, str] | None = None, embed=None) -> list[dict]:
     """Decisions of `guard` on logged tool-call events, task by task.
 
     events: gateway log lines. Those with type "tool_call" are replayed: task, server, tool,
     arguments, result_text, is_error, decision; the others are skipped, except that a "start" line
     may give the server labels. `labels` overrides them (logs written before labels were logged
-    have none, and then the guard's context has none either).
+    have none, and then the guard's context has none either). `embed` is the context's embed
+    function for the replay, usually an EmbeddingCache holding what the run recorded; without
+    one, a guard that embeds gets what it has (by default: no embedder).
 
     Within a task the steps are applied in the order of `seq_call` and `seq_result` when the task
     was logged with them; a line of such a task that has none is not replayed (replay_skipped true,
@@ -362,6 +484,8 @@ def replay(guard, events: list[dict], labels: dict[str, str] | None = None) -> l
         if context is not None:
             context.labels = dict(labels if labels is not None else task_labels or {})
             context.call_id = None
+            if embed is not None:
+                context.embed = embed
         session = Session(guard)
         # A task logged with step numbers is replayed by them. A line without a number in such a
         # task is a result that came back after its own task had ended: this task's guard never

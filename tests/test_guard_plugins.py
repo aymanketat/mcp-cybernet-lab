@@ -513,8 +513,9 @@ def test_a_wheel_is_built_from_a_plugin_folder_with_its_own_backend(tmp_path):
     before = sorted(p.name for p in PLUGIN.rglob("*"))
     wheel = compose.build_wheel(PLUGIN, tmp_path / "plugins")
     assert wheel.name == "mcl_dummy_guard-0.1.0-py3-none-any.whl"
-    assert compose.wheel_guards(wheel)["guards"] == [
-        {"guard": "dummy", "tree_sha256": guards.tree_sha256(PLUGIN / "src/mcl_dummy_guard")}]
+    sha = guards.tree_sha256(PLUGIN / "src/mcl_dummy_guard")
+    assert compose.wheel_guards(wheel)["guards"] == [  # a plugin with two guards: one package, one hash
+        {"guard": "dummy", "tree_sha256": sha}, {"guard": "dummy-embed", "tree_sha256": sha}]
     assert sorted(p.name for p in PLUGIN.rglob("*")) == before  # the build leaves nothing in the folder
 
 

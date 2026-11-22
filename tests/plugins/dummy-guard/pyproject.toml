@@ -13,6 +13,7 @@ dependencies = []
 
 [project.entry-points."mcp_cybernet_lab.guards"]
 dummy = "mcl_dummy_guard:DummyGuard"
+dummy-embed = "mcl_dummy_guard:DummyEmbedGuard"
 
 [tool.setuptools.packages.find]
 where = ["src"]
