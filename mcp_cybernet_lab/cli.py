@@ -7,6 +7,7 @@
     mcl check-isolation T.yaml          with a gateway: a client reaches its model and the gateway, nothing else
     mcl run      T.yaml --tasks F.yaml  run the agent on each task; detect leaks; write runs/<testbed>/<id>/
     mcl report   RUN_DIR                rates with 95% intervals
+    mcl rescore  RUN_DIR                score a stored run again with this version's detector; no Docker needed
     mcl compare  RUN_A RUN_B            paired comparison (exact McNemar)
     mcl check-coverage RUN_DIR          with a gateway: every tool call of the agent is in the gateway log
     mcl reset    T.yaml                 restore every server's data to the planted state
@@ -181,6 +182,24 @@ def cmd_report(args) -> int:
     return 0
 
 
+def cmd_rescore(args) -> int:
+    from .report import rescored
+    from .runner import rescore
+    run, out = Path(args.run), Path(args.out) if args.out else None
+    if out and out.resolve() == (run / "results.jsonl").resolve():
+        raise TestbedError("--out names the stored results of the run; they are kept, choose another file")
+    pairs = rescore(run)
+    print(rescored(run.name, pairs))
+    if out:
+        with open(out, "w", encoding="utf-8") as f:
+            for _, again in pairs:
+                f.write(json.dumps(again, ensure_ascii=False) + "\n")
+        print(f"result lines scored again: {out}")
+    else:
+        print("nothing was written; --out FILE keeps the result lines scored again")
+    return 0
+
+
 def cmd_compare(args) -> int:
     from .report import compare
     print(compare(Path(args.run_a), Path(args.run_b), args.metric))
@@ -249,6 +268,10 @@ def main(argv: list[str] | None = None) -> int:
     sp.add_argument("run_b")
     sp.add_argument("--metric", default="leaked", choices=["leaked", "attempted", "completed"])
     sp.set_defaults(fn=cmd_compare)
+    sp = sub.add_parser("rescore", help="score a stored run again with this version's leak detector")
+    sp.add_argument("run", help="a run folder (runs/<testbed>/<id>); it is read and never changed")
+    sp.add_argument("--out", help="write the result lines scored again to this file (`mcl report FILE` reads it)")
+    sp.set_defaults(fn=cmd_rescore)
 
     sp = sub.add_parser("web", help="local web UI to configure and run testbeds")
     sp.add_argument("--dir", default=".", help="project directory (default: current)")
