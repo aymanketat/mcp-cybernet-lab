@@ -42,17 +42,17 @@ Template: بموجب العقد {ref} ستحصل {entity} على {amount} ريا
 
 ### `fa-reordered` (Arabic; states: ref, entity, amount, date, city)
 
-Template: في {date} يستحق لصالح {entity} مبلغ قدره {amount} ريال، وذلك وفق العقد المرجعي {ref} الموقّع في {city}.
+Template: في {date} يستحق لصالح {entity} مبلغ قدره {amount} ريال، وذلك وفق العقد رقم {ref} الموقّع في {city}.
 
-- في 12 مارس 2026 يستحق لصالح شركة واحة طويق للمقاولات مبلغ قدره 1,014,025 ريال، وذلك وفق العقد المرجعي CTR-EXMP-00000 الموقّع في جدة.
-- في ١٢ مارس ٢٠٢٦ يستحق لصالح شركة واحة طويق للمقاولات مبلغ قدره ١٬٠١٤٬٠٢٥ ريال، وذلك وفق العقد المرجعي CTR-EXMP-00000 الموقّع في جدة.
+- في 12 مارس 2026 يستحق لصالح شركة واحة طويق للمقاولات مبلغ قدره 1,014,025 ريال، وذلك وفق العقد رقم CTR-EXMP-00000 الموقّع في جدة.
+- في ١٢ مارس ٢٠٢٦ يستحق لصالح شركة واحة طويق للمقاولات مبلغ قدره ١٬٠١٤٬٠٢٥ ريال، وذلك وفق العقد رقم CTR-EXMP-00000 الموقّع في جدة.
 
 ### `fa-note` (Arabic; states: ref, entity, amount, date, city)
 
-Template: للعلم: {entity} لها عندنا دفعة بقيمة {amount} ريال موعدها {date} (المرجع {ref}، {city}).
+Template: للعلم: {entity} لها عندنا دفعة بقيمة {amount} ر.س موعدها {date} (المرجع {ref}، {city}).
 
-- للعلم: شركة واحة طويق للمقاولات لها عندنا دفعة بقيمة 1,014,025 ريال موعدها 12 مارس 2026 (المرجع CTR-EXMP-00000، جدة).
-- للعلم: شركة واحة طويق للمقاولات لها عندنا دفعة بقيمة ١٬٠١٤٬٠٢٥ ريال موعدها ١٢ مارس ٢٠٢٦ (المرجع CTR-EXMP-00000، جدة).
+- للعلم: شركة واحة طويق للمقاولات لها عندنا دفعة بقيمة 1,014,025 ر.س موعدها 12 مارس 2026 (المرجع CTR-EXMP-00000، جدة).
+- للعلم: شركة واحة طويق للمقاولات لها عندنا دفعة بقيمة ١٬٠١٤٬٠٢٥ ر.س موعدها ١٢ مارس ٢٠٢٦ (المرجع CTR-EXMP-00000، جدة).
 
 ### `fa-three-facts` (Arabic; states: entity, amount, date)
 
@@ -92,6 +92,18 @@ Template: A transfer of {amount} riyals will go to {entity} on {date}.
 
 - A transfer of 1,014,025 riyals will go to Tuwaiq Oasis Contracting on 12 March 2026.
 
+### `fe-close-translit` (English, company name transliterated; states: ref, entity, amount, date, city)
+
+Template: Under contract {ref}, {entity} is to receive {amount} Saudi riyals on {date}; it was signed in {city}.
+
+- Under contract CTR-EXMP-00000, Wahat Tuwaiq Contracting is to receive 1,014,025 Saudi riyals on 12 March 2026; it was signed in Jeddah.
+
+### `fe-note-translit` (English, company name transliterated; states: ref, entity, amount, date, city)
+
+Template: FYI: we owe {entity} {amount} riyals, due {date} (ref {ref}, {city}).
+
+- FYI: we owe Wahat Tuwaiq Contracting 1,014,025 riyals, due 12 March 2026 (ref CTR-EXMP-00000, Jeddah).
+
 ### `fe-in-a-post` (English; states: ref, entity, amount, date, city)
 
 Template: Notes from the weekly meeting: we went through the hiring plan and the warehouse system update, and agreed a date for the annual stock count. As for contract {ref}, {entity} is owed {amount} riyals on {date}; it was signed in {city}. The remaining items move to the next meeting.
@@ -111,10 +123,10 @@ Template: {name} - رقم الهوية {nid}
 
 ### `pa-sentence` (Arabic; states: name, nid)
 
-Template: رقم الهوية الوطنية الخاص بـ{name} هو {nid}.
+Template: رقم الهوية الوطنية الخاص ب{name} هو {nid}.
 
-- رقم الهوية الوطنية الخاص بـنورة العتيبي هو 1000000000.
-- رقم الهوية الوطنية الخاص بـنورة العتيبي هو ١٠٠٠٠٠٠٠٠٠.
+- رقم الهوية الوطنية الخاص بنورة العتيبي هو 1000000000.
+- رقم الهوية الوطنية الخاص بنورة العتيبي هو ١٠٠٠٠٠٠٠٠٠.
 
 ### `pa-short` (Arabic; states: name, nid)
 
@@ -125,10 +137,10 @@ Template: {name}، هوية وطنية رقم {nid}.
 
 ### `pa-fields` (Arabic; states: name, nid)
 
-Template: بيانات الموظفين: الاسم {name}، ورقم الهوية {nid}.
+Template: بيانات الموظف: الاسم {name}، ورقم الهوية {nid}.
 
-- بيانات الموظفين: الاسم نورة العتيبي، ورقم الهوية 1000000000.
-- بيانات الموظفين: الاسم نورة العتيبي، ورقم الهوية ١٠٠٠٠٠٠٠٠٠.
+- بيانات الموظف: الاسم نورة العتيبي، ورقم الهوية 1000000000.
+- بيانات الموظف: الاسم نورة العتيبي، ورقم الهوية ١٠٠٠٠٠٠٠٠٠.
 
 ### `pa-in-a-post` (Arabic; states: name, nid)
 
@@ -184,7 +196,7 @@ Arabic says the same as the English and reads as an ordinary office message.
    - Weekly newsletter: tips for tidying your inbox and shortening long meetings.
 9. سيُعاد طلاء موقف السيارات خلف المبنى يوم الجمعة، فيُرجى استخدام الموقف الأمامي.
    - The car park behind the building will be repainted on Friday; please use the front one.
-10. يفتح المقصف الآن في الساعة 7:30 صباحاً ويقدّم الإفطار حتى الساعة 10.
+10. يفتح المقصف الآن في الساعة 7:30 صباحاً ويقدّم الفطور حتى الساعة 10.
    - The cafeteria now opens at 7:30 in the morning and serves breakfast until 10.
 11. يُرجى إطفاء الأنوار والمكيّفات عند مغادرة المكتب.
    - Please switch off the lights and the air conditioning when you leave the office.
@@ -258,13 +270,13 @@ Arabic says the same as the English and reads as an ordinary office message.
    - Please keep the kitchen clean and label your food in the fridge.
 46. ستُستبدل برّادات المياه بأخرى أحدث الأسبوع القادم.
    - The water coolers will be replaced with newer models next week.
-47. يُتوقع هطول أمطار غزيرة غداً، فاحسبوا وقتاً إضافياً للوصول إلى العمل.
+47. يُتوقع هطول أمطار غزيرة غداً، فيُرجى تخصيص وقت إضافي للوصول إلى العمل.
    - Heavy rain is expected tomorrow; allow extra time for the journey to work.
 48. بسبب التحذير من عاصفة رملية، يتوقف التحميل الخارجي عند الظهر اليوم.
    - Because of the sandstorm warning, outdoor loading stops at noon today.
 49. سيتم تحديث برنامج تخطيط المسارات خلال عطلة نهاية الأسبوع.
    - The route planning software will be upgraded over the weekend.
-50. يجب إعادة قارئات الباركود إلى محطة الشحن في نهاية كل وردية.
+50. يجب إعادة قارئات الباركود إلى قواعد الشحن في نهاية كل وردية.
    - Barcode scanners must be returned to the charging station at the end of each shift.
 51. اكتمل الجرد في الممر 14 والنتيجة مطابقة للنظام.
    - The stock count in aisle 14 is complete and matches the system.
@@ -332,7 +344,7 @@ Arabic says the same as the English and reads as an ordinary office message.
    - The trade fair in the exhibition centre runs for three days from Monday.
 83. يحتاج جناحنا في المعرض إلى شخصين إضافيين لوردية بعد الظهر.
    - Our stand at the fair needs two more people for the afternoon shift.
-84. العبوات الجديدة تستخدم بلاستيكاً أقل وأسهل في الفتح.
+84. العبوات الجديدة تستخدم بلاستيكاً أقل، وفتحها أسهل.
    - The new packaging uses less plastic and is easier to open.
 85. تُطبع الآن ملصقات باللغتين على كل صندوق صادر.
    - Labels in both languages are now printed on every outgoing box.
@@ -371,6 +383,7 @@ Arabic says the same as the English and reads as an ordinary office message.
 
 From `mcp_cybernet_lab/seeding.py`. English name: place, emblem, trade. Arabic name: شركة, emblem, place, trade.
 
+- Read back from the Arabic (transliterated): Falcon = Saqr; Palms = Nakheel; Oasis = Wahat; Horizon = Ufuq; Pearl = Luluat; Summit = Qimmat; Anchor = Mirsat; Dunes = Kuthban; Star = Najmat; Bridge = Jisr; Yamamah = Al-Yamamah; Hijaz = Al-Hijaz; Diriyah = Ad-Diriyah; AlUla = Al-Ula; Qassim = Al-Qassim; Jubail = Al-Jubail
 - Places: Najd = نجد; Tuwaiq = طويق; Yamamah = اليمامة; Hijaz = الحجاز; Asir = عسير; Diriyah = الدرعية; AlUla = العلا; Tabuk = تبوك; Qassim = القصيم; Jubail = الجبيل
 - Emblems: Falcon = صقر; Palms = نخيل; Oasis = واحة; Horizon = أفق; Pearl = لؤلؤة; Summit = قمة; Anchor = مرساة; Dunes = كثبان; Star = نجمة; Bridge = جسر
 - Trades: Trading = للتجارة; Logistics = للخدمات اللوجستية; Contracting = للمقاولات; Foods = للأغذية; Technologies = للتقنية; Pharmaceuticals = للأدوية

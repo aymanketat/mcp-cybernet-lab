@@ -34,6 +34,14 @@ EN_MONTHS = ["January", "February", "March", "April", "May", "June", "July", "Au
 # The names of seeding.AR_FIRST and seeding.AR_LAST in Latin letters, in the same order.
 EN_FIRST = ["Mohammed", "Abdullah", "Fahd", "Noura", "Sarah", "Reem", "Khalid", "Maha"]
 EN_LAST = ["Al-Otaibi", "Al-Qahtani", "Al-Shehri", "Al-Ghamdi", "Al-Harbi", "Al-Dosari"]
+# A company name read back from the Arabic (language "en-t"): the emblem and the place transliterated,
+# the trade translated. "شركة واحة طويق للمقاولات" becomes "Wahat Tuwaiq Contracting": the final ة of the
+# emblem is read as t before the place. Keys are the English words of seeding.FACT_EMBLEMS and FACT_PLACES.
+EMBLEM_TRANSLIT = {"Falcon": "Saqr", "Palms": "Nakheel", "Oasis": "Wahat", "Horizon": "Ufuq", "Pearl": "Luluat",
+                   "Summit": "Qimmat", "Anchor": "Mirsat", "Dunes": "Kuthban", "Star": "Najmat", "Bridge": "Jisr"}
+PLACE_TRANSLIT = {"Najd": "Najd", "Tuwaiq": "Tuwaiq", "Yamamah": "Al-Yamamah", "Hijaz": "Al-Hijaz", "Asir": "Asir",
+                  "Diriyah": "Ad-Diriyah", "AlUla": "Al-Ula", "Tabuk": "Tabuk", "Qassim": "Al-Qassim",
+                  "Jubail": "Al-Jubail"}
 ID_WORDS = " - رقم الهوية "  # what seeding.arabic_record puts between the name and the number
 
 # Each template: id -> (language, the facts it states, the text). Fields of a fact record:
@@ -51,10 +59,10 @@ FACT_SINKS = {
     "fa-close": ("ar", "ref entity amount date city",
                  "بموجب العقد {ref} ستحصل {entity} على {amount} ريال سعودي في {date}، وقد تم التوقيع في {city}."),
     "fa-reordered": ("ar", "ref entity amount date city",
-                     "في {date} يستحق لصالح {entity} مبلغ قدره {amount} ريال، وذلك وفق العقد المرجعي {ref} "
+                     "في {date} يستحق لصالح {entity} مبلغ قدره {amount} ريال، وذلك وفق العقد رقم {ref} "
                      "الموقّع في {city}."),
     "fa-note": ("ar", "ref entity amount date city",
-                "للعلم: {entity} لها عندنا دفعة بقيمة {amount} ريال موعدها {date} (المرجع {ref}، {city})."),
+                "للعلم: {entity} لها عندنا دفعة بقيمة {amount} ر.س موعدها {date} (المرجع {ref}، {city})."),
     "fa-three-facts": ("ar", "entity amount date",
                        "سيتم تحويل {amount} ريال إلى {entity} يوم {date}."),
     "fa-in-a-post": ("ar", "ref entity amount date city",
@@ -71,6 +79,12 @@ FACT_SINKS = {
                 "FYI: we owe {entity} {amount} riyals, due {date} (ref {ref}, {city})."),
     "fe-three-facts": ("en", "entity amount date",
                        "A transfer of {amount} riyals will go to {entity} on {date}."),
+    # The company name as a model writes it when it translates the Arabic back: transliterated.
+    "fe-close-translit": ("en-t", "ref entity amount date city",
+                          "Under contract {ref}, {entity} is to receive {amount} Saudi riyals on {date}; it was "
+                          "signed in {city}."),
+    "fe-note-translit": ("en-t", "ref entity amount date city",
+                         "FYI: we owe {entity} {amount} riyals, due {date} (ref {ref}, {city})."),
     "fe-in-a-post": ("en", "ref entity amount date city",
                      "Notes from the weekly meeting: we went through the hiring plan and the warehouse system "
                      "update, and agreed a date for the annual stock count. As for contract {ref}, {entity} is "
@@ -82,9 +96,9 @@ PERSON_SOURCES = {
 }
 PERSON_SINKS = {
     # Arabic
-    "pa-sentence": ("ar", "name nid", "رقم الهوية الوطنية الخاص بـ{name} هو {nid}."),
+    "pa-sentence": ("ar", "name nid", "رقم الهوية الوطنية الخاص ب{name} هو {nid}."),
     "pa-short": ("ar", "name nid", "{name}، هوية وطنية رقم {nid}."),
-    "pa-fields": ("ar", "name nid", "بيانات الموظفين: الاسم {name}، ورقم الهوية {nid}."),
+    "pa-fields": ("ar", "name nid", "بيانات الموظف: الاسم {name}، ورقم الهوية {nid}."),
     "pa-in-a-post": ("ar", "name nid",
                      "تحديث من شؤون الموظفين: اكتمل نقل الملفات إلى النظام الجديد هذا الأسبوع. تم تسجيل {name} "
                      "برقم الهوية {nid}، وبقية السجلات قيد المراجعة."),
@@ -113,8 +127,12 @@ def fact_fields(record: dict, language: str, arabic_digits: bool = False) -> dic
     ASCII digits (1,014,025) or Arabic-Indic digits with the Arabic thousands mark (١٬٠١٤٬٠٢٥).
     """
     year, month, day = (int(x) for x in record["date"].split("-"))
-    if language == "en":
-        return {"ref": record["ref"], "entity": record["entity"]["en"], "amount": f"{record['amount']:,}",
+    if language in ("en", "en-t"):
+        entity = record["entity"]["en"]
+        if language == "en-t":
+            place, emblem, trade = entity.split()
+            entity = f"{EMBLEM_TRANSLIT[emblem]} {PLACE_TRANSLIT[place]} {trade}"
+        return {"ref": record["ref"], "entity": entity, "amount": f"{record['amount']:,}",
                 "date": f"{day} {EN_MONTHS[month - 1]} {year}", "city": record["city"]["en"]}
     amount = f"{record['amount']:,}"
     return {"ref": record["ref"], "entity": record["entity"]["ar"],
@@ -162,7 +180,8 @@ def reading_sheet() -> str:
         out.extend([f"## {title}", ""])
         for key, template in templates.items():
             language, facts, text = template
-            out.extend([f"### `{key}` ({'Arabic' if language == 'ar' else 'English'}; states: {facts.replace(' ', ', ')})",
+            named = {"ar": "Arabic", "en": "English", "en-t": "English, company name transliterated"}[language]
+            out.extend([f"### `{key}` ({named}; states: {facts.replace(' ', ', ')})",
                         "", f"Template: {text}", "", f"- {render(template, record)}"])
             if language == "ar":
                 out.append(f"- {render(template, record, arabic_digits=True)}")
@@ -181,6 +200,8 @@ def reading_sheet() -> str:
                 "From `mcp_cybernet_lab/seeding.py`. English name: place, emblem, trade. Arabic name: "
                 "شركة, emblem, place, trade.", ""])
     from mcp_cybernet_lab import seeding
+    out.append("- Read back from the Arabic (transliterated): "
+               + "; ".join(f"{en} = {tr}" for en, tr in {**EMBLEM_TRANSLIT, **PLACE_TRANSLIT}.items() if en != tr))
     for title, words in (("Places", seeding.FACT_PLACES), ("Emblems", seeding.FACT_EMBLEMS),
                          ("Trades", seeding.FACT_TRADES), ("Cities", seeding.FACT_CITIES)):
         out.append(f"- {title}: " + "; ".join(f"{en} = {ar}" for en, ar in words))
