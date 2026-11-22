@@ -157,6 +157,7 @@ tasks/attacks.yaml` (needs an LLM API key); compare the guarded and unguarded ru
 ```bash
 mcl run     testbeds/enterprise-network.yaml --tasks tasks/enterprise.yaml   # run the agent, detect leaks
 mcl report  runs/enterprise-network/<id>                                     # rates with 95% Wilson intervals
+mcl rescore runs/enterprise-network/<id>                                     # score a stored run again: this version's detector
 mcl compare runs/A runs/B                                                    # paired comparison, exact McNemar
 ```
 

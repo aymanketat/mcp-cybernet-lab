@@ -15,6 +15,8 @@ runs/<testbed>/<run id>/
   <task>-r<k>/gateway.jsonl      gateway decisions (with a gateway)
   <task>-r<k>/sinks.jsonl        sink records during the task
   results.jsonl                  one line per task run
+
+`rescore` reads such a folder and scores every task run again, without Docker and without a model.
 """
 
 from __future__ import annotations
@@ -169,3 +171,36 @@ class Runner:
 
 def stamp() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
+
+
+def rescore(run: Path, **parameters) -> list[tuple[dict, dict]]:
+    """Score a stored run again with the detector of this version of the lab.
+
+    Returns (the stored result line, the line scored again) for every task run of the run folder.
+    Each task run is analysed as `mcl run` analysed it: its trace, gateway log, sink records and
+    summary, with the canaries and the server labels the folder holds. The new line also keeps what
+    the stored line has and the detector does not produce (repeat, seconds, policy). `parameters`
+    go to the detector (partial_from, chance, ...). Nothing in the folder is changed.
+    """
+    def load(path: Path):
+        return json.loads(path.read_text(encoding="utf-8"))
+
+    missing = [name for name in ("results.jsonl", "canaries.json", "manifest.json") if not (run / name).is_file()]
+    if missing:
+        raise TestbedError(f"{run} is not a run folder: no {', '.join(missing)}")
+    detector = Detector(load(run / "canaries.json"), **parameters)
+    labels = {s["id"]: s["label"] for s in load(run / "manifest.json")["servers"]}
+    pairs = []
+    for stored in read_jsonl(run / "results.jsonl"):
+        name = stored.get("run") or f"{stored['task']}-r{stored.get('repeat', 0)}"
+        out, task = run / name, run / "tasks" / f"{stored['task']}.json"
+        if not out.is_dir() or not task.is_file():
+            raise TestbedError(f"{run}: task run {name} cannot be scored again "
+                               f"(no folder {name}, or no tasks/{task.name})")
+        # Without a summary the agent had failed before it wrote one: the stored error is all there is.
+        summary = load(out / "summary.json") if (out / "summary.json").is_file() else {"error": stored.get("error")}
+        summary["run"] = name
+        again = analyse_task(detector, labels, read_jsonl(out / "trace.jsonl"), read_jsonl(out / "gateway.jsonl"),
+                             read_jsonl(out / "sinks.jsonl"), summary, load(task))
+        pairs.append((stored, again | {k: v for k, v in stored.items() if k not in again}))
+    return pairs
