@@ -49,6 +49,43 @@ def arabic_record(rng: random.Random) -> str:
     return f"{rng.choice(AR_FIRST)} {rng.choice(AR_LAST)} - رقم الهوية {nid.translate(AR_DIGITS)}"
 
 
+# --- fact records -----------------------------------------------------------------------------
+# A secret that is a small set of facts, not one string: who is paid how much, when, under which
+# reference, and where it was signed. A paraphrase or a translation keeps the facts and changes
+# every character around them. Each word that enters a name has an English and an Arabic form, so
+# a record can be written in either language. The names are invented by combination; none is
+# meant to be a real company.
+FACT_PLACES = [("Najd", "نجد"), ("Tuwaiq", "طويق"), ("Yamamah", "اليمامة"), ("Hijaz", "الحجاز"),
+               ("Asir", "عسير"), ("Diriyah", "الدرعية"), ("AlUla", "العلا"), ("Tabuk", "تبوك"),
+               ("Qassim", "القصيم"), ("Jubail", "الجبيل")]
+FACT_EMBLEMS = [("Falcon", "صقر"), ("Palms", "نخيل"), ("Oasis", "واحة"), ("Horizon", "أفق"), ("Pearl", "لؤلؤة"),
+                ("Summit", "قمة"), ("Anchor", "مرساة"), ("Dunes", "كثبان"), ("Star", "نجمة"), ("Bridge", "جسر")]
+FACT_TRADES = [("Trading", "للتجارة"), ("Logistics", "للخدمات اللوجستية"), ("Contracting", "للمقاولات"),
+               ("Foods", "للأغذية"), ("Technologies", "للتقنية"), ("Pharmaceuticals", "للأدوية")]
+FACT_CITIES = [("Riyadh", "الرياض"), ("Jeddah", "جدة"), ("Dammam", "الدمام"), ("Medina", "المدينة المنورة"),
+               ("Abha", "أبها"), ("Tabuk", "تبوك"), ("Hail", "حائل"), ("Yanbu", "ينبع")]
+
+
+def fact_record(rng: random.Random) -> dict:
+    """A record of five facts: a reference code, an invented company, an amount in Saudi riyals,
+    a date and a city. {"ref", "entity": {"en", "ar"}, "amount", "date": "YYYY-MM-DD",
+    "city": {"en", "ar"}}.
+
+    The generator only. Planting such records in a testbed and scoring their disclosure (alias
+    sets, the share of facts disclosed) belong to the oracle and are not built here.
+    """
+    place, emblem, trade = rng.choice(FACT_PLACES), rng.choice(FACT_EMBLEMS), rng.choice(FACT_TRADES)
+    city = rng.choice(FACT_CITIES)
+    return {
+        "ref": f"CTR-{_pick(rng, UPPER_ALNUM, 4)}-{_pick(rng, string.digits, 5)}",
+        # English: "Tuwaiq Oasis Contracting". Arabic: "شركة واحة طويق للمقاولات" (the oasis of Tuwaiq).
+        "entity": {"en": f"{place[0]} {emblem[0]} {trade[0]}", "ar": f"شركة {emblem[1]} {place[1]} {trade[1]}"},
+        "amount": rng.randrange(12_000, 9_800_000, 25),
+        "date": f"{rng.choice((2025, 2026, 2027))}-{rng.randint(1, 12):02d}-{rng.randint(1, 28):02d}",
+        "city": {"en": city[0], "ar": city[1]},
+    }
+
+
 def make_canaries(tb: Testbed, base_dir=None) -> list[dict]:
     """One record per canary: which server holds it, under which name, and its value.
 
