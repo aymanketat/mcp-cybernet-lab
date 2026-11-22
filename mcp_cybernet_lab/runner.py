@@ -271,9 +271,15 @@ def replay_run(run: Path, guard: str | None = None, policy_file: Path | None = N
                 f"{', '.join(sorted(logged)) or 'no tree hash'}. Install the code of the run, or name "
                 f"another guard with --guard")
 
-    calls = []
+    clash = guards.installed_clashes().get(name)
+    if clash:
+        raise TestbedError(f"{clash}: it is not clear which guard to replay. Uninstall or rename a plugin")
+    calls, not_replayed = [], []
     for task, lines in events.items():
         for e in guards.replay(guard_object, lines, labels):
+            if e["replay_skipped"]:
+                not_replayed.append({"task": task, "server": e["server"], "tool": e["tool"]})
+                continue
             calls.append({"task": task, "call_id": e["replay_call_id"], "server": e["server"], "tool": e["tool"],
                           "label": labels.get(e["server"]), "seq_call": e.get("seq_call"),
                           "seq_result": e.get("seq_result"), "logged": e.get("decision"),
@@ -284,4 +290,7 @@ def replay_run(run: Path, guard: str | None = None, policy_file: Path | None = N
     return {"run": run.name, "testbed": manifest.get("testbed"), "guard": name, "guard_ran": ran,
             "guard_plugin": info, "policy": source, "policy_version": policy.get("version"),
             "policy_sha256": policy_sha256(policy), "own": name == ran and not policy_file,
-            "task_runs": len(events), "calls": calls}
+            "task_runs": len(events), "calls": calls,
+            # Lines without step numbers in a task logged with them: results that came back after
+            # their own task had ended. The guard of the task they are logged in never saw them.
+            "not_replayed": not_replayed}

@@ -70,6 +70,9 @@ def load_testbed(path: str | Path) -> Loaded:
         raise TestbedError(f"gateway.plugins: two folders have the same name ({sorted(names)})")
     if tb.gateway.plugins and tb.gateway.guard == "none":
         raise TestbedError("gateway.plugins needs a gateway (gateway.guard is none)")
+    if tb.gateway.guard != "none":  # other clashes among installed plugins do not touch this testbed
+        warnings.extend(f"{sentence}; this testbed does not use the name"
+                        for name, sentence in installed_clashes().items() if name != tb.gateway.guard)
     if tb.llm.api_key_env and not os.environ.get(tb.llm.api_key_env):
         warnings.append(f"llm: environment variable {tb.llm.api_key_env} is not set")
     asked = isinstance(data.get("llm"), dict) and data["llm"].get("egress") is not None
@@ -87,11 +90,8 @@ def check_buildable(tb: Testbed) -> None:
         if d.auth == "oauth":
             todo.append(f"domain '{d.id}': auth 'oauth' (use 'token'; OAuth 2.1 is not implemented)")
     name = tb.gateway.guard
-    if name != "none":
-        clashes = installed_clashes()
-        if clashes:
-            raise TestbedError("guard names must mean one thing; uninstall or rename a plugin:\n"
-                               + "\n".join(f"  - {c}" for c in clashes))
+    if name != "none" and name in installed_clashes():  # the name this testbed uses is ambiguous
+        raise TestbedError(f"gateway.guard: {installed_clashes()[name]}. Uninstall or rename a plugin")
     if name != "none" and name not in GUARDS:
         try:
             check_guard(name)

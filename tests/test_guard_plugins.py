@@ -233,7 +233,7 @@ def test_replay_of_a_built_in_guard_on_an_old_log_is_what_it_was():
     assert [(e["replay_allowed"], e["replay_reason"]) for e in out] == [
         (True, ""), (False, "tainted value from id@hr sent to sink paste")]
     assert all(set(e) - set(src) == {"replay_allowed", "replay_reason", "replay_call_id", "replay_error",
-                                     "replay_withheld"} for e, src in zip(out, log))
+                                     "replay_withheld", "replay_skipped"} for e, src in zip(out, log))
 
 
 # --- the gateway ---------------------------------------------------------------------------------
@@ -251,12 +251,13 @@ def gateway(dummy, monkeypatch, tmp_path):
     monkeypatch.setattr(inner, "plugin_entry_points", guards.plugin_entry_points)
     log = tmp_path / "gateway.jsonl"
     module.load_guard()
-    module.State.log, module.State.task, module.State.pending = open(log, "w", encoding="utf-8"), "t-r0", {}
+    module.State.log, module.State.task = open(log, "w", encoding="utf-8"), "t-r0"
     module.write(type="start", guard="dummy", policy_version=None, labels=module.labels(), plugins=module.State.plugins)
 
     def call(server, request_id, tool="x"):
         """One tools/call through the gateway's two hooks: (the answer if blocked, the result hook)."""
         handler = types.SimpleNamespace(server_id=server, headers={"Mcp-Session-Id": "s"})
+        handler.own_call = lambda msg: module.Gateway.own_call(handler, msg)
         body = json.dumps({"jsonrpc": "2.0", "id": request_id, "method": "tools/call",
                            "params": {"name": tool, "arguments": {}}}).encode()
         blocked = module.Gateway.before(handler, body)
@@ -330,7 +331,13 @@ def test_a_plugin_guard_needs_its_folder_in_the_testbed(tmp_path, dummy):
         load_testbed(tb(tmp_path, plugins=[str(PLUGIN)]))
 
 
-def test_without_plugins_the_gateway_image_is_built_as_before(tmp_path):
+def test_without_plugins_the_gateway_image_is_built_as_before(tmp_path, monkeypatch):
+    def no_wheel(*a, **k):
+        raise AssertionError("a testbed without plugins must not build a wheel (no pip, no package index)")
+
+    monkeypatch.setattr(compose, "build_wheel", no_wheel)
+    monkeypatch.setattr(compose.subprocess, "run", lambda cmd, **k: no_wheel() if "pip" in cmd else
+                        __import__("subprocess").CompletedProcess(cmd, 1, "", ""))
     for name in ("enterprise-guarded", "enterprise-attacks"):
         out = compose.build(load_testbed(ROOT / f"testbeds/{name}.yaml"), tmp_path / name, tmp_path / "runs" / name)
         text = (out / "dockerfiles/gateway.Dockerfile").read_text()
@@ -540,40 +547,50 @@ def test_the_configured_guard_must_be_in_one_of_the_wheels(tmp_path, dummy, monk
 def test_name_clashes_name_both_sides():
     said = guards.name_clashes([("dummy", "pkg-a"), ("dummy", "pkg-b"), ("taint", "pkg-a"), ("none", "pkg-c"),
                                 ("passthrough", "pkg-c"), ("fine", "pkg-a"), ("fine", "pkg-a")], "here")
-    assert said == [
-        "guard name 'dummy' is registered by 2 plugins: pkg-a, pkg-b (here)",
-        "guard name 'none' means no gateway and is also registered by plugin pkg-c (here)",
-        "guard name 'passthrough' is a built-in guard and is also registered by plugin pkg-c (here)",
-        "guard name 'taint' is a built-in guard and is also registered by plugin pkg-a (here)"]
+    assert said == {
+        "dummy": "guard name 'dummy' is registered by 2 plugins: pkg-a, pkg-b (here)",
+        "none": "guard name 'none' means no gateway and is also registered by plugin pkg-c (here)",
+        "passthrough": "guard name 'passthrough' is a built-in guard and is also registered by plugin pkg-c (here)",
+        "taint": "guard name 'taint' is a built-in guard and is also registered by plugin pkg-a (here)"}
 
 
-@pytest.mark.parametrize("installed, says", [
-    ([("dummy", "pkg-a"), ("dummy", "pkg-b")], "guard name 'dummy' is registered by 2 plugins: pkg-a, pkg-b"),
-    ([("taint", "pkg-a")], "guard name 'taint' is a built-in guard and is also registered by plugin pkg-a"),
-    ([("passthrough", "pkg-a")], "guard name 'passthrough' is a built-in guard and is also registered by plugin pkg-a"),
-    ([("none", "pkg-a")], "guard name 'none' means no gateway and is also registered by plugin pkg-a"),
-], ids=["two-plugins", "taint", "passthrough", "none"])
-def test_the_build_refuses_a_clash_among_installed_plugins(tmp_path, monkeypatch, installed, says):
-    eps = [FakeEntryPoint(name, lambda: Recorder, package=package) for name, package in installed]
+def install(monkeypatch, *registered) -> None:
+    """Pretend these (guard name, package) pairs are the plugins installed on this machine."""
+    eps = [FakeEntryPoint(name, lambda: Recorder, package=package) for name, package in registered]
     monkeypatch.setattr(guards, "installed_entry_points", lambda: eps)
-    for guard in ("taint", "passthrough"):  # also when the testbed itself uses a built-in guard
-        with pytest.raises(TestbedError, match=says + r" \(installed on this machine\)"):
-            check_buildable(load_testbed(tb(tmp_path, guard=guard)).testbed)
-    check_buildable(load_testbed(tb(tmp_path)).testbed)  # no gateway: no guard name is used
 
 
-@pytest.mark.parametrize("second, says", [
-    ({"dummy": "mcl_dummy_guard:DummyGuard"},
-     "guard name 'dummy' is registered by 2 plugins: mcl-dummy-guard, second-plugin (in gateway.plugins)"),
-    ({"taint": "mcl_dummy_guard:DummyGuard"},
-     "guard name 'taint' is a built-in guard and is also registered by plugin second-plugin (in gateway.plugins)"),
-], ids=["two-plugins", "built-in"])
-def test_the_build_refuses_a_clash_among_the_plugins_of_a_testbed(tmp_path, dummy, monkeypatch, second, says):
+@pytest.mark.parametrize("installed, guard, says", [
+    ([("mine", "pkg-a"), ("mine", "pkg-b")], "mine", "guard name 'mine' is registered by 2 plugins: pkg-a, pkg-b"),
+    ([("taint", "pkg-a")], "taint", "guard name 'taint' is a built-in guard and is also registered by plugin pkg-a"),
+    ([("passthrough", "pkg-a")], "passthrough",
+     "guard name 'passthrough' is a built-in guard and is also registered by plugin pkg-a"),
+], ids=["two-plugins", "taint", "passthrough"])
+def test_the_build_refuses_when_the_name_the_testbed_uses_is_ambiguous(tmp_path, monkeypatch, installed, guard, says):
+    install(monkeypatch, *installed)
+    with pytest.raises(TestbedError, match="gateway.guard: " + says + r" \(installed on this machine\)"):
+        check_buildable(load_testbed(tb(tmp_path, guard=guard)).testbed)
+
+
+@pytest.mark.parametrize("installed", [
+    [("mine", "pkg-a"), ("mine", "pkg-b")], [("passthrough", "pkg-a")], [("none", "pkg-a")],
+], ids=["two-plugins", "built-in", "none"])
+def test_a_clash_on_a_name_the_testbed_does_not_use_is_a_warning(tmp_path, monkeypatch, installed):
+    install(monkeypatch, *installed)
+    loaded = load_testbed(tb(tmp_path, guard="taint"))
+    check_buildable(loaded.testbed)  # builds
+    name = installed[0][0]
+    assert [w for w in loaded.warnings if f"guard name '{name}'" in w and w.endswith("this testbed does not use the name")]
+    assert not [w for w in load_testbed(tb(tmp_path)).warnings if "guard name" in w]  # no gateway: nothing to say
+
+
+def two_plugin_testbed(tmp_path, monkeypatch, second: dict | None) -> Path:
+    """dummy-testbed.yaml, with a second plugin folder whose wheel registers `second` (None: one plugin)."""
     (tmp_path / "second").mkdir()
     (tmp_path / "second/pyproject.toml").write_text("")
     f = tmp_path / "t.yaml"
     data = yaml.safe_load(TESTBED.read_text())
-    data["gateway"] = {"guard": "dummy", "plugins": [str(PLUGIN), "second"]}
+    data["gateway"] = {"guard": "dummy", "plugins": [str(PLUGIN)] + (["second"] if second is not None else [])}
     for s in data["servers"]:
         s["path"] = str((TESTBED.parent / s["path"]).resolve())
     f.write_text(yaml.safe_dump(data))
@@ -584,9 +601,46 @@ def test_the_build_refuses_a_clash_among_the_plugins_of_a_testbed(tmp_path, dumm
         return make_wheel(source, dest)
 
     monkeypatch.setattr(compose, "build_wheel", build_wheel)
+    return f
+
+
+@pytest.mark.parametrize("second, says", [
+    ({"dummy": "mcl_dummy_guard:DummyGuard"}, "guard name 'dummy' is registered by 2 plugins: mcl-dummy-guard, second-plugin"),
+    ({"taint": "mcl_dummy_guard:DummyGuard"}, "guard name 'taint' is a built-in guard and is also registered by plugin second-plugin"),
+    ({"none": "mcl_dummy_guard:DummyGuard"}, "guard name 'none' means no gateway and is also registered by plugin second-plugin"),
+], ids=["two-plugins", "built-in", "none"])
+def test_the_build_refuses_a_listed_plugin_that_clashes(tmp_path, dummy, monkeypatch, second, says):
+    f = two_plugin_testbed(tmp_path, monkeypatch, second)
+    install(monkeypatch, ("dummy", "mcl-dummy-guard"))
     with pytest.raises(TestbedError) as e:
         compose.build(load_testbed(f), tmp_path / "b", tmp_path / "runs")
+    assert "a plugin in gateway.plugins registers a guard name that does not mean one thing" in str(e.value)
     assert says in str(e.value)
+
+
+def test_the_build_refuses_a_listed_plugin_that_clashes_with_an_installed_one(tmp_path, dummy, monkeypatch):
+    f = two_plugin_testbed(tmp_path, monkeypatch, {"extra": "mcl_dummy_guard:DummyGuard"})
+    install(monkeypatch, ("dummy", "mcl-dummy-guard"), ("extra", "somebody-elses-plugin"))
+    with pytest.raises(TestbedError, match="guard name 'extra' is registered by 2 plugins: second-plugin, "
+                                           "somebody-elses-plugin"):
+        compose.build(load_testbed(f), tmp_path / "b", tmp_path / "runs")
+
+
+def test_clashes_among_other_installed_plugins_do_not_stop_a_build_with_plugins(tmp_path, dummy, monkeypatch):
+    f = two_plugin_testbed(tmp_path, monkeypatch, None)
+    install(monkeypatch, ("dummy", "mcl-dummy-guard"), ("other", "pkg-a"), ("other", "pkg-b"))
+    loaded = load_testbed(f)
+    assert any("guard name 'other'" in w for w in loaded.warnings)
+    compose.build(loaded, tmp_path / "b", tmp_path / "runs")
+
+
+def test_mcl_replay_refuses_an_ambiguous_guard_name(tmp_path, monkeypatch, capsys):
+    run = run_folder(tmp_path, None, guard="passthrough")
+    install(monkeypatch, ("mine", "pkg-a"), ("mine", "pkg-b"), ("taint", "pkg-c"))
+    assert main(["replay", str(run)]) != 2  # passthrough means one thing: replayed, not refused
+    assert "guard   passthrough (built in)" in capsys.readouterr().out
+    assert main(["replay", str(run), "--guard", "taint"]) == 2
+    assert "is a built-in guard and is also registered by plugin pkg-c" in capsys.readouterr().err
 
 
 # --- a guard that raises -------------------------------------------------------------------------
@@ -696,3 +750,153 @@ def test_mcl_replay_and_check_coverage_tell_a_crash_from_a_decision(tmp_path, mo
     assert covered  # a withheld result is not a block: the trace and the log agree
     assert ("calls in which the guard raised (failed closed): 2   blocked 1, "
             "result withheld after the tool ran 1") in text
+
+
+# --- the log holds exactly the steps the guard saw -----------------------------------------------
+def post(port: int, request_id: int, tool: str = "x"):
+    import urllib.error
+    import urllib.request
+    body = json.dumps({"jsonrpc": "2.0", "id": request_id, "method": "tools/call",
+                       "params": {"name": tool, "arguments": {"q": 1}}}).encode()
+    request = urllib.request.Request(f"http://127.0.0.1:{port}/hr/mcp", data=body, method="POST",
+                                     headers={"Content-Type": "application/json", "Mcp-Session-Id": "s"})
+    try:
+        with urllib.request.urlopen(request, timeout=20) as r:
+            return r.status, json.loads(r.read())
+    except urllib.error.HTTPError as e:
+        return e.code, json.loads(e.read())
+
+
+@pytest.fixture
+def served(gateway, monkeypatch):
+    """The gateway served over HTTP, in front of an upstream the test chooses (a port on this machine)."""
+    import socket
+    import threading
+    upstream = {"port": None}
+
+    class Served(gateway.module.Gateway):
+        def route(self):
+            self.server_id = "hr"
+            return "127.0.0.1", upstream["port"], "/mcp"
+
+    monkeypatch.setattr(sys.modules["httpproxy"], "UPSTREAM_WAIT_S", 0)
+    faulty_gateway(gateway.module, {})
+    server = sys.modules["httpproxy"].serve(Served, 0, "127.0.0.1")
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+
+    def closed_port() -> int:
+        with socket.socket() as s:
+            s.bind(("127.0.0.1", 0))
+            return s.getsockname()[1]
+
+    def hangs_up() -> int:
+        """An upstream that accepts the request and closes without an answer."""
+        listener = socket.socket()
+        listener.bind(("127.0.0.1", 0))
+        listener.listen(5)
+
+        def run():
+            while True:
+                try:
+                    conn, _ = listener.accept()
+                except OSError:
+                    return
+                conn.recv(65536)
+                conn.close()
+
+        threading.Thread(target=run, daemon=True).start()
+        return listener.getsockname()[1]
+
+    yield types.SimpleNamespace(port=server.server_address[1], upstream=upstream, closed_port=closed_port,
+                                hangs_up=hangs_up, read=gateway.read, module=gateway.module)
+    server.shutdown()
+    server.server_close()
+
+
+@pytest.mark.parametrize("kind", ["closed_port", "hangs_up"])
+def test_an_allowed_call_its_server_never_answers_is_logged(served, kind):
+    served.upstream["port"] = getattr(served, kind)()
+    status, answer = post(served.port, 1)
+    assert status == 502 and "upstream 127.0.0.1" in answer["error"]
+    status, _ = post(served.port, 2, tool="y")
+    assert status == 502
+    _, first, second = served.read()
+    assert (first["decision"], first["tool"], first["arguments"], first["call_id"], first["seq_call"],
+            first["seq_result"], first["result_text"], first["http_status"]) == (
+        "allow", "x", {"q": 1}, "c1", 1, None, None, 502)
+    assert first["upstream_error"].startswith("upstream 127.0.0.1:") and first["guard_error"] is None
+    assert (second["call_id"], second["seq_call"]) == ("c2", 2)  # no step number is missing from the log
+    again = guards.replay(Recorder({}), [first, second])
+    assert [e["replay_allowed"] for e in again] == [True, True]
+
+
+def test_a_result_that_returns_after_the_next_task_started_is_logged_without_numbers(gateway):
+    faulty_gateway(gateway.module, {})
+    _, late = gateway.call("hr", 1)            # c1 of the old task is at its server
+    faulty_gateway(gateway.module, {})         # what the control port does at /start: a new guard
+    _, returns = gateway.call("paste", 1)      # c1 of the new task, with the same request ID
+    late(ok("rows of the old task"))
+    returns(ok())
+    _, stray, own = gateway.read()
+    assert (stray["server"], stray["tool"], stray["call_id"], stray["seq_call"], stray["seq_result"]) == (
+        "hr", "x", None, None, None)
+    assert (own["call_id"], own["seq_call"], own["seq_result"]) == ("c1", 1, 2)
+    assert gateway.module.State.guard.seen == ["paste"]  # the new guard was never shown the old result
+
+
+def test_replay_skips_a_line_without_numbers_in_a_numbered_task():
+    """The stray result of another task must not be put to this task's guard, and must not send the
+    whole task back to line order."""
+    stray = line("hr", numbered=False) | {"call_id": None, "seq_call": None, "seq_result": None}
+    log = [stray, line("hr", "c1", seq_call=1, seq_result=3), line("paste", "c2", seq_call=2, seq_result=4)]
+    g = Recorder({})
+    out = guards.replay(g, log)
+    assert g.steps == [("call", "c1", "hr"), ("call", "c2", "paste"), ("result", "c1", "hr"), ("result", "c2", "paste")]
+    assert [(e["replay_skipped"], e["replay_allowed"], e["replay_call_id"]) for e in out] == [
+        (True, None, None), (False, True, "c1"), (False, True, "c2")]
+    old = [line("hr", numbered=False), line("paste", numbered=False)]  # no line numbered: an old log, as before
+    assert [e["replay_skipped"] for e in guards.replay(Recorder({}), old)] == [False, False]
+
+
+def coverage_run(tmp_path, log: list[dict], trace_of=None) -> Path:
+    run = run_folder(tmp_path, None, guard="passthrough")
+    (run / "t-r0/gateway.jsonl").write_text("".join(json.dumps(e) + "\n" for e in log))
+    trace = [{"type": "tool_call", "server": e["server"], "tool": e["tool"], "arguments": {},
+              "blocked": e["decision"] == "block"} for e in (trace_of if trace_of is not None else log)]
+    (run / "t-r0/trace.jsonl").write_text("".join(json.dumps(e) + "\n" for e in trace))
+    (run / "results.jsonl").write_text(json.dumps({"task": "t", "repeat": 0, "run": "t-r0"}) + "\n")
+    return run
+
+
+def test_mcl_replay_reports_lines_it_did_not_replay(tmp_path, capsys):
+    stray = line("hr", numbered=False) | {"call_id": None, "seq_call": None, "seq_result": None}
+    run = coverage_run(tmp_path, [stray, line("paste", "c1", 1, 2)])
+    assert main(["replay", str(run)]) == 0
+    text = capsys.readouterr().out
+    assert "Run live replayed: 1 tool calls in 1 task runs" in text and "same decision as logged: 1 of 1" in text
+    assert ("not replayed: 1 lines without step numbers (results that came back after their task had ended): "
+            "t-r0 hr.x") in text
+
+
+def test_check_coverage_reports_gaps_in_the_step_numbers(tmp_path):
+    from mcp_cybernet_lab.report import gateway_coverage
+    whole = [line("hr", "c1", 1, 2), line("paste", "c2", 3, None, text=None) | {"upstream_error": "upstream down"},
+             line("hr", "c3", 4, 5)]
+    covered, text = gateway_coverage(coverage_run(tmp_path / "a", whole))
+    assert covered
+    assert ("guard steps: numbered in 1 task runs; with a gap, a repeat or a line without a number: 0"
+            "   allowed calls their server did not answer: 1") in text
+
+    gap = [line("hr", "c1", 1, 2), line("hr", "c3", 4, 5)]  # the line of c2 (step 3) is not there
+    covered, text = gateway_coverage(coverage_run(tmp_path / "b", gap))
+    assert not covered and "STEPS t-r0: numbers 1..5; missing [3]" in text
+
+    stray = line("hr", numbered=False) | {"call_id": None, "seq_call": None, "seq_result": None}
+    twice = [line("hr", "c1", 1, 2), stray, line("hr", "c2", 2, 3)]
+    covered, text = gateway_coverage(coverage_run(tmp_path / "c", twice))
+    assert not covered
+    assert "STEPS t-r0: numbers 1..3; twice [2]; 1 tool-call lines without a number (results of another task)" in text
+
+    old = [line("hr", numbered=False), line("paste", numbered=False)]  # a log from before step numbers
+    covered, text = gateway_coverage(coverage_run(tmp_path / "d", old))
+    assert covered and "guard steps" not in text

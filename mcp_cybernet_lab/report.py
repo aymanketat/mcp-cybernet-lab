@@ -8,7 +8,7 @@ A paired comparison (same tasks, two topologies or two guards) uses the exact Mc
 the tasks where the two runs disagree.
 
 `gateway_coverage` checks a guarded run against itself: every tool call the agent recorded must
-also be in the gateway's log.
+also be in the gateway's log, and the guard's step numbers in each task's log must run 1..N.
 """
 
 from __future__ import annotations
@@ -212,6 +212,10 @@ def replayed(r: dict) -> str:
         return c[key] + (", result withheld" if c[f"{key}_withheld"] else "") + (
             f", guard raised {c[f'{key}_error']}" if c[f"{key}_error"] else "")
 
+    if r.get("not_replayed"):
+        lines.append(f"  not replayed: {len(r['not_replayed'])} lines without step numbers (results that came back "
+                     f"after their task had ended): "
+                     + ", ".join(f"{c['task']} {c['server']}.{c['tool']}" for c in r["not_replayed"]))
     for c in calls:
         if not replay_same(c):
             lines.append(f"    {c['task']} {c['call_id']} {c['server']}.{c['tool']}: logged {said(c, 'logged')}; "
@@ -268,6 +272,7 @@ def gateway_coverage(run: Path) -> tuple[bool, str]:
     rows = load_results(run)
     in_trace = in_gateway = unknown = blocked_trace = blocked_gateway = 0
     decisions, starts, methods, problems, guard_errors = Counter(), Counter(), Counter(), [], Counter()
+    numbered, upstream, step_problems = 0, 0, []
     for r in rows:
         name = r.get("run") or f"{r['task']}-r{r.get('repeat', 0)}"
         trace, log = _jsonl(run / name / "trace.jsonl"), _jsonl(run / name / "gateway.jsonl")
@@ -277,6 +282,19 @@ def gateway_coverage(run: Path) -> tuple[bool, str]:
                 for e in calls if e.get("server") is not None]
         seen = [(e["server"], e["tool"], canon(e.get("arguments")), e.get("decision") == "block")
                 for e in log if e.get("type") == "tool_call"]
+        steps = [n for e in log if e.get("type") == "tool_call" for n in (e.get("seq_call"), e.get("seq_result"))
+                 if n is not None]
+        if steps:  # a task logged with step numbers: they run 1..N, each once, and every line has one
+            numbered += 1
+            unnumbered = sum(e.get("type") == "tool_call" and e.get("seq_call") is None for e in log)
+            missing = sorted(set(range(1, max(steps) + 1)) - set(steps))
+            twice = sorted(n for n, c in Counter(steps).items() if c > 1)
+            if missing or twice or unnumbered:
+                step_problems.append(
+                    f"  STEPS {name}: numbers 1..{max(steps)}"
+                    + (f"; missing {missing}" if missing else "") + (f"; twice {twice}" if twice else "")
+                    + (f"; {unnumbered} tool-call lines without a number (results of another task)" if unnumbered else ""))
+            upstream += sum(bool(e.get("upstream_error")) for e in log)
         for e in log:
             if e.get("type") == "start":
                 starts[f"{e.get('guard')} v{e.get('policy_version')}"] += 1
@@ -317,6 +335,10 @@ def gateway_coverage(run: Path) -> tuple[bool, str]:
         lines.append(f"  calls in which the guard raised (failed closed): {sum(guard_errors.values())}   "
                      f"blocked {guard_errors[('block', False)]}, "
                      f"result withheld after the tool ran {guard_errors[('allow', True)]}")
+    if numbered:  # logs written before step numbers existed print nothing here
+        lines.append(f"  guard steps: numbered in {numbered} task runs; with a gap, a repeat or a line "
+                     f"without a number: {len(step_problems)}"
+                     + (f"   allowed calls their server did not answer: {upstream}" if upstream else ""))
     if unknown:
         lines.append(f"  calls to a tool no server offers (answered by the agent itself, never sent): {unknown}")
-    return not problems and bool(rows), "\n".join(lines + problems)
+    return not problems and not step_problems and bool(rows), "\n".join(lines + problems + step_problems)
