@@ -12,12 +12,17 @@ text, and `mcl replay` reads it back, so a replay sees what the live run saw and
 embedder. `mcl check-isolation` covers the embedder from four sides. Without the setting, every
 shipped testbed builds to the same compose file and Dockerfiles as before.
 
+A second round, after review of the first (`9b6c86d`), added three things, each marked below: the
+image's packages are locked with hashes, the gateway's wait for the embedder is short and a
+testbed setting, and the isolation check was run on a testbed with both the LLM relay and the embedder.
+
 ## The setting
 
 ```yaml
 gateway:
   guard: my-guard
   embedder: minilm-paraphrase    # none (default), e5-small, labse, bge-m3, minilm-paraphrase
+  embed_timeout_s: 5             # optional: seconds the gateway waits for one text (default: the model's)
 ```
 
 The name is one of `embedding.MODELS`, each pinned by revision and by the SHA-256 of every file.
@@ -41,11 +46,20 @@ its base image.**
   pinned revision if they are not there), checks every hash, and links them into the embedder's
   own build context. The image build runs `embedding.py verify` again: a file that is not the
   pinned one fails the build. No weight is downloaded at run time; the container has no route out.
-- **The packages** (numpy, onnxruntime, tokenizers, in the versions of the calibration) are wheels
-  that `mcl build` downloads on the host for the image's Python and installs with `--no-index`.
-  The first version let the image run `pip install` itself; on the machine of this work that
-  failed, because TLS from inside containers is intercepted there. Wheels from the host need no
-  network in the build, as with guard plugins. The manifest lists the wheels that went in.
+- **The packages** are wheels that `mcl build` downloads on the host for the image's Python and
+  the image installs with `--no-index`. The first version let the image run `pip install` itself;
+  on the machine of this work that failed, because TLS from inside containers is intercepted
+  there. Wheels from the host need no network in the build, as with guard plugins.
+- **The packages are locked with hashes** *(second round)*. `mcp_cybernet_lab/embedder.lock` lists
+  every package of the image, the three pinned ones (numpy, onnxruntime, tokenizers, in the
+  versions of the calibration) and the seventeen they depend on, each at one version with the
+  SHA-256 of its wheel for x86_64 and for aarch64. `mcl build` downloads exactly these
+  (`pip download --require-hashes --no-deps -r embedder.lock`), then checks file by file that each
+  wheel is a locked package with a locked hash and that none is missing; the image installs them
+  with `--require-hashes` again. A wheel that is not the locked one stops the build. The manifest
+  records the lock's hash and the hash of every wheel that went in. Changing a package is a
+  deliberate act: `python -m mcp_cybernet_lab.embedding lock` writes the file again, to be reviewed
+  and committed. The install extra `embed` for the host pins the three packages only.
 - **Its own context.** The files are in `build/<testbed>/embedder/`, not in the context the other
   images share, so no other image carries the model or the module.
 - The module is not one of `CONTAINER_MODULES`: the standard-library images stay as they are.
@@ -66,6 +80,25 @@ live and a cache backs it in replay.
 A guard that lets either exception escape fails closed, as any guard that raises does: the call
 is blocked, or the result withheld, and the log line has `guard_error`. A guard embeds inside its
 hooks, which run under the gateway's lock, so other calls wait while a text is embedded.
+
+**How long they wait** *(second round)*. The gateway waited up to 120 s for the embedder; a stuck
+embedder held every call that long. The wait is now sized to the largest request a guard can
+send, one text at the model's token limit, measured on one thread of the machine of the calibration:
+
+| Model | Token limit in the lab | One text at that limit | Default wait |
+|---|---|---|---|
+| `minilm-paraphrase` | 128 | 0.09 s | 5 s |
+| `e5-small` | 512 | 0.33 to 0.36 s | 5 s |
+| `labse` | 256 | 0.57 to 0.63 s | 5 s |
+| `bge-m3` | 512 (the model reads 8,192) | 4.3 to 5.9 s | 30 s |
+
+- After the wait the guard gets `EmbedError` ("the embedder did not answer") and fails closed
+  unless it handles it; the refusal is recorded, so replay reproduces it.
+- `gateway.embed_timeout_s` sets another value for a testbed (above 0, at most 600).
+- **`bge-m3` is bounded at 512 tokens in the lab.** At 2,048 tokens one text took 24 to 33 s, and
+  at its full 8,192 tokens the process was killed for lack of memory on a machine with 8 GB. The
+  calibration is not affected: no text of its pair set comes near any limit. The calibration note
+  gives 8,192 as this model's limit; that was the reference's figure, and this bound replaces it.
 
 ## `embeddings.jsonl`
 
@@ -106,8 +139,33 @@ With an embedder the check probes more containers, with the probe it already use
 |---|---|
 | each client | the embedder does not resolve and does not answer at its address |
 | each server | the same |
-| the embedder | no default route; an outside host neither resolves nor answers by address |
+| the embedder | no default route; an outside host neither resolves nor answers by address; with an LLM relay, neither relay container resolves or answers *(second round)* |
 | the gateway | the embedder answers and names the testbed's model and revision |
+
+### With the LLM relay and the embedder together (second round)
+
+`testbeds/enterprise-guarded.yaml` with `embedder: minilm-paraphrase` added, started on
+23 November 2026 without an API key. No tokens: the check only asks the provider for its model list.
+
+| From | Checks | Result |
+|---|---|---|
+| the agent | no default route; the provider's name resolves to the relay; no outside host, server, service, relay exit or embedder by name or address; the relay has one open port and carries no other host; the gateway answers | 26 of 26 |
+| the agent | TLS to the provider verifies end to end through the relay; the model API answers | 0 of 2 (below) |
+| each of the five servers | the embedder neither resolves nor answers | 10 of 10 |
+| the embedder | no default route, no outside host, and neither relay container by name or address | 9 of 9 |
+| the gateway | the embedder answers with the testbed's model | 1 of 1 |
+
+46 of 48. The two that fail are the same fact: **the certificate the agent is shown for the
+provider is not the provider's.** Read without trusting it, in a plain container and in the agent
+through the relay, the certificate for `api.deepseek.com` (and for `pypi.org`, `huggingface.co`,
+`registry.npmjs.org`, `example.com`) is issued by "Norton Web/Mail Shield Root" and does not verify.
+On the WSL host the same names present their real issuers (Amazon, GlobalSign, Google Trust
+Services, Cloudflare) and verify. So an antivirus product on this machine intercepts TLS from
+containers, and the relay's guarantee holds as built: the agent verifies the provider's
+certificate itself, sees a certificate it does not trust, and sends nothing, the key included. No
+container was made to trust the interceptor; that would hand it the key. With the interception
+on, a guarded run with a hosted model cannot start on this machine. The embedder is not affected:
+its image is built from the host's downloads and it makes no connection.
 
 ## The live check
 
@@ -157,7 +215,9 @@ Documented additions: `manifest.json` gains `embedder` (null), its `gateway` ent
 
 ## Tests
 
-630 tests pass. `tests/test_embedder.py` holds 23: the cache (exact round trip, refusals recorded
+637 tests pass. `tests/test_embedder.py` holds 30 (seven from the second round: the lock and the
+file-by-file check of the wheels, a wheel that is not the locked one, the wait and its setting, a
+stuck embedder, the relay in the embedder's plan): the cache (exact round trip, refusals recorded
 and raised again, a missing text), the sidecar over HTTP with a stand-in model, the gateway's side
 (a guard embeds, the vectors are written, replay from the file gives the same decisions; an
 embedder that is another model or does not answer is refused), the build, the isolation plan, and
@@ -170,12 +230,13 @@ give the same bytes, and a long text is refused. The test plugin now registers t
 - **One machine.** Byte-identical vectors were seen across a restart, a rebuild, and between the
   container and the host of this machine. Across processors they are not guaranteed; the run's
   file is what makes a replay exact.
-- **Packages one level down are not pinned.** The three packages are pinned; what they depend on
-  is resolved when the wheels are downloaded. The manifest records which wheels went in.
+- **The lock is for Python 3.12 on x86_64 and aarch64 Linux,** the embedder image's Python. The
+  base image itself is named by tag (`python:3.12-slim-bookworm`), not by digest.
 - **`mcl build` with an embedder** needs pip, the package index, and the model's files (fetched
   once, 0.5 to 2.3 GB). Without the setting it needs none of these (tested).
 - **Windows and long texts are a guard's business.** `embed` refuses a long text; cutting a
   payload into windows is not built here, and the calibration did not test it.
-- **The lock.** A slow model (`bge-m3`: about 0.3 s per text) holds up every call while a guard embeds.
+- **The gateway's lock.** Calls wait while a guard embeds, now at most the wait above per text. A
+  request that timed out is still being computed in the embedder, so the next one waits behind it.
 - **Not run:** an embedder together with the LLM relay in one testbed, the three larger models as
   images, and a live run with a language model through an embedding guard.
