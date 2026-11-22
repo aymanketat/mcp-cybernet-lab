@@ -30,7 +30,7 @@ from urllib.parse import urlsplit
 import yaml
 
 from . import __version__
-from .guards import default_policy, files_sha256, guard_info, is_code, name_clashes
+from .guards import default_policy, files_sha256, guard_info, installed_guards, is_code, name_clashes
 from .loader import Loaded, TestbedError, check_buildable
 from .schema import LLM_EGRESS, LLM_RELAY, Client, Server, Service, Testbed
 from .seeding import canary_file_text, make_canaries, stream
@@ -262,9 +262,14 @@ def build_plugins(loaded: Loaded, out: Path, guard_plugin: dict | None) -> list[
         source = (loaded.path.parent / p).resolve()
         wheel = build_wheel(source, out / "context" / "plugins")
         plugins.append({"name": source.name, "path": str(source), "wheel": wheel.name} | wheel_guards(wheel))
-    clashes = name_clashes([(g["guard"], p["package"]) for p in plugins for g in p["guards"]], "in gateway.plugins")
+    # A listed plugin may clash with nothing: not with a built-in name, another listed plugin, or
+    # a plugin installed on this machine (replay would not know which one the gateway ran).
+    listed = [(g["guard"], p["package"]) for p in plugins for g in p["guards"]]
+    clashes = name_clashes(listed + installed_guards(), "in gateway.plugins or installed on this machine")
+    clashes = [sentence for name, sentence in clashes.items() if name in {g for g, _ in listed}]
     if clashes:
-        raise TestbedError("guard names must mean one thing:\n" + "\n".join(f"  - {c}" for c in clashes))
+        raise TestbedError("a plugin in gateway.plugins registers a guard name that does not mean one thing:\n"
+                           + "\n".join(f"  - {c}" for c in clashes))
     if guard_plugin:
         name = guard_plugin["guard"]
         built = [g["tree_sha256"] for p in plugins for g in p["guards"] if g["guard"] == name]

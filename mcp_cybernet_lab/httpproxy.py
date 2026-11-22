@@ -56,6 +56,10 @@ class Proxy(BaseHTTPRequestHandler):
         """Called with a POST body. Return a JSON body to answer directly (blocked), or None."""
         return None
 
+    def failed(self, body: bytes, error: str) -> None:
+        """Called with a POST that was sent on (before() returned None) and got no response from
+        the upstream: after() will not be called for it."""
+
     def after(self, body: bytes, status: int, content_type: str, resp: bytes) -> bytes | None:
         """Called with a POST and its buffered response. Return a JSON body to send in place of
         the response (it is withheld from the client), or None to pass the response on."""
@@ -82,6 +86,13 @@ class Proxy(BaseHTTPRequestHandler):
                 return self._send(200, answer)
         headers = {k: v for k, v in self.headers.items() if k.lower() not in HOP}
         deadline = time.monotonic() + UPSTREAM_WAIT_S
+
+        def no_response(e: Exception):
+            error = f"upstream {host}:{port}: {type(e).__name__}: {e}"
+            if method == "POST":
+                self.failed(body, error)
+            return self._send(502, json.dumps({"error": error}).encode())
+
         while True:  # the upstream may be restarting (mcl run restarts servers between tasks)
             conn = http.client.HTTPConnection(host, port, timeout=600)
             try:
@@ -91,14 +102,19 @@ class Proxy(BaseHTTPRequestHandler):
             except (ConnectionRefusedError, socket.gaierror) as e:
                 conn.close()
                 if time.monotonic() > deadline:
-                    return self._send(502, json.dumps({"error": f"upstream {host}:{port}: {e}"}).encode())
+                    return no_response(e)
                 time.sleep(0.5)
-            except OSError as e:
-                return self._send(502, json.dumps({"error": f"upstream {host}:{port}: {e}"}).encode())
+            except (OSError, http.client.HTTPException) as e:
+                conn.close()
+                return no_response(e)
         out_headers = [(k, v) for k, v in r.getheaders() if k.lower() not in HOP and k.lower() != "content-type"]
         ctype = r.getheader("Content-Type", "application/json")
         if method == "POST":
-            resp = r.read()
+            try:
+                resp = r.read()
+            except (OSError, http.client.HTTPException) as e:  # the upstream broke off in mid-answer
+                conn.close()
+                return no_response(e)
             conn.close()
             answer = self.after(body, r.status, ctype, resp)
             if answer is not None:

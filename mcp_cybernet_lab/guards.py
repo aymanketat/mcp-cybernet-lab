@@ -158,27 +158,32 @@ def plugin_entry_points() -> dict:
     return {ep.name: ep for ep in installed_entry_points() if ep.name not in GUARDS}
 
 
-def name_clashes(registered: list[tuple[str, str]], where: str) -> list[str]:
+def name_clashes(registered: list[tuple[str, str]], where: str) -> dict[str, str]:
     """Guard names that do not mean one thing. registered: (guard name, package) pairs, e.g. of the
-    plugins installed on this machine. A sentence per clash, naming both sides."""
+    plugins installed on this machine. Name -> a sentence naming both sides."""
     by_name: dict[str, set] = {}
     for name, package in registered:
         by_name.setdefault(name, set()).add(package)
-    out = []
+    out = {}
     for name, packages in sorted(by_name.items()):
         listed = ", ".join(sorted(packages))
         if name in GUARDS:
-            out.append(f"guard name '{name}' is a built-in guard and is also registered by plugin {listed} ({where})")
+            out[name] = f"guard name '{name}' is a built-in guard and is also registered by plugin {listed} ({where})"
         elif name in RESERVED:
-            out.append(f"guard name '{name}' means no gateway and is also registered by plugin {listed} ({where})")
+            out[name] = f"guard name '{name}' means no gateway and is also registered by plugin {listed} ({where})"
         elif len(packages) > 1:
-            out.append(f"guard name '{name}' is registered by {len(packages)} plugins: {listed} ({where})")
+            out[name] = f"guard name '{name}' is registered by {len(packages)} plugins: {listed} ({where})"
     return out
 
 
-def installed_clashes() -> list[str]:
-    return name_clashes([(ep.name, getattr(getattr(ep, "dist", None), "name", None) or ep.value)
-                         for ep in installed_entry_points()], "installed on this machine")
+def installed_guards() -> list[tuple[str, str]]:
+    """(guard name, package) for every guard an installed plugin registers."""
+    return [(ep.name, getattr(getattr(ep, "dist", None), "name", None) or ep.value)
+            for ep in installed_entry_points()]
+
+
+def installed_clashes() -> dict[str, str]:
+    return name_clashes(installed_guards(), "installed on this machine")
 
 
 def guard_class(name: str) -> type:
@@ -338,12 +343,15 @@ def replay(guard, events: list[dict], labels: dict[str, str] | None = None) -> l
     may give the server labels. `labels` overrides them (logs written before labels were logged
     have none, and then the guard's context has none either).
 
-    Within a task the steps are applied in the order of `seq_call` and `seq_result` when every line
-    has them, and otherwise in line order, each result right after its call. The result of a call
+    Within a task the steps are applied in the order of `seq_call` and `seq_result` when the task
+    was logged with them; a line of such a task that has none is not replayed (replay_skipped true,
+    replay_allowed None). A task logged without step numbers is applied in line order, each result
+    right after its call. The result of a call
     is put to the guard only if this guard allows the call (a blocked call has no result) and, as
     in the gateway, only if the result is not an error. Returns the tool-call lines in their
     logged order, each with replay_allowed, replay_reason, replay_call_id, and for a guard that
-    raised replay_error (what Session reports) and replay_withheld (it raised in on_result).
+    raised replay_error (what Session reports) and replay_withheld (it raised in on_result), and
+    replay_skipped.
     """
     out: list[dict] = []
     logged_labels: dict[str, str] | None = None
@@ -355,9 +363,14 @@ def replay(guard, events: list[dict], labels: dict[str, str] | None = None) -> l
             context.labels = dict(labels if labels is not None else task_labels or {})
             context.call_id = None
         session = Session(guard)
-        numbered = all(e.get("seq_call") is not None for e in lines)
+        # A task logged with step numbers is replayed by them. A line without a number in such a
+        # task is a result that came back after its own task had ended: this task's guard never
+        # saw that call, so it is not put to the guard and is marked as not replayed.
+        numbered = any(e.get("seq_call") is not None for e in lines)
         steps = []
         for i, e in enumerate(lines):
+            if numbered and e.get("seq_call") is None:
+                continue
             steps.append((e["seq_call"] if numbered else 2 * i, 0, i))
             if not numbered:
                 steps.append((2 * i + 1, 1, i))
@@ -374,9 +387,12 @@ def replay(guard, events: list[dict], labels: dict[str, str] | None = None) -> l
                                        e.get("result_text"), e.get("is_error"))
                 if after["error"]:
                     decided[i] |= {"error": after["error"], "withheld": True}
-        out.extend({**e, "replay_allowed": decided[i]["allowed"], "replay_reason": decided[i]["reason"],
-                    "replay_call_id": decided[i]["call_id"], "replay_error": decided[i]["error"],
-                    "replay_withheld": decided[i]["withheld"]} for i, e in enumerate(lines))
+        not_replayed = {"allowed": None, "reason": "", "call_id": None, "error": None, "withheld": False}
+        for i, e in enumerate(lines):
+            d = decided.get(i, not_replayed)
+            out.append({**e, "replay_allowed": d["allowed"], "replay_reason": d["reason"],
+                        "replay_call_id": d["call_id"], "replay_error": d["error"],
+                        "replay_withheld": d["withheld"], "replay_skipped": i not in decided})
 
     lines, task, task_labels = [], None, None
     for e in events:
