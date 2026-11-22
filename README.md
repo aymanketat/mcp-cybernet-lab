@@ -191,6 +191,19 @@ mcl check-coverage  runs/enterprise-guarded/<id>       # after `run`: every tool
 Both exit with status 1 when a check fails. Details and measurements:
 [`docs/2026-11-22-0035-guarded-llm-egress.md`](docs/2026-11-22-0035-guarded-llm-egress.md).
 
+**Guard plugins and replay.** A guard can also come from a separate package that registers a class
+in the entry-point group `mcp_cybernet_lab.guards`. List the package folder in `gateway.plugins` and
+name the guard in `gateway.guard`; the gateway image installs it offline. The gateway log gives every
+tool call the server's label, a call ID and the order of the guard's steps, so a run can be replayed
+exactly:
+
+```bash
+mcl replay runs/enterprise-guarded/<id>                  # the run's own guard and policy: the logged decisions again
+mcl replay runs/enterprise-guarded/<id> --guard G --policy P.yaml --out decisions.jsonl   # another guard or policy
+```
+
+Details: [`docs/2026-11-22-2255-guard-plugins-and-gateway-events.md`](docs/2026-11-22-2255-guard-plugins-and-gateway-events.md).
+
 ## What `build` writes
 
 ```
@@ -225,7 +238,7 @@ pytest -q        # schema, canaries, generated compose, guard, detector and LLM 
 MCP CyberNet Lab is a baseline others can build on:
 
 - **New servers** — drop a package under `servers/` and reference it with `runtime: local`.
-- **New guards** — subclass `Guard` in [`mcp_cybernet_lab/guards.py`](mcp_cybernet_lab/guards.py) and register it.
+- **New guards** — a plugin package that registers a `Guard` subclass (template: [`tests/plugins/dummy-guard`](tests/plugins/dummy-guard)), or a built-in guard in [`mcp_cybernet_lab/guards.py`](mcp_cybernet_lab/guards.py).
 - **New commands** — a separate package can add `mcl` subcommands through the `mcp_cybernet_lab.commands`
   entry point, without modifying this repository.
 
