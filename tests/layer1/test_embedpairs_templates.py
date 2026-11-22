@@ -51,9 +51,28 @@ def test_languages_and_scripts_are_what_the_template_says():
             arabic = bool(re.search(r"[؀-ۿ]", ep.render(template, record).replace(record["ref"], "")))
             assert arabic == (template[0] == "ar"), key
         assert not re.search(r"[0-9]", ep.render(ep.FACT_SINKS["fa-close"], record, True).replace(record["ref"], ""))
+
+
+def test_ordinary_traffic_is_a_hundred_distinct_lines_per_language_and_carries_no_record():
+    from ordinary_lines import LINES
+    assert len(LINES) == 100
+    for language in ("ar", "en"):
+        texts = [text for lang, text in ep.EASY_DECOYS.values() if lang == language]
+        assert len(texts) == len(set(texts)) == 100
     for key, (language, text) in ep.EASY_DECOYS.items():
         assert bool(re.search(r"[؀-ۿ]", text)) == (language == "ar"), key
-        assert not re.search(r"\d", text), key  # ordinary traffic here carries no number at all
+        assert (language == "ar") != bool(re.search(r"[A-Za-z]", text)), key
+        # everyday numbers only: nothing as long as an amount or an ID, no reference code, no riyals
+        assert not re.search(r"[0-9٠-٩]{4,}|CTR-|riyal|ريال|SAR", text), key
+
+    def words(text: str) -> set:
+        return set(re.findall(r"[a-z]{4,}", text.lower()))
+
+    english = [words(e) for e, _ in LINES]
+    for i, a in enumerate(english):  # each line its own subject: no two share most of their words
+        for b in english[i + 1:]:
+            assert len(a & b) < 0.6 * min(len(a), len(b))
+
 
 
 def test_every_name_has_its_latin_form():
