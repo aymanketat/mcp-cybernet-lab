@@ -76,6 +76,18 @@ FILES = {server: canary_file_text([c for c in PLANTED if c["server"] == server])
 FILES[NOWHERE] = canary_file_text(DECOYS)  # a file of the same shape that holds decoys only
 
 
+def flow(calls: list[dict], server: str = "paste", blocked: bool = False,
+         read: dict[str, str] | None = None) -> list[dict]:
+    """The agent's trace of one task: private servers return their data, then the agent makes these
+    calls to one server. `read`: private server -> the text it returns. By default each of the two
+    returns the canaries planted in it, so the agent has received every planted canary."""
+    read = {source: FILES[source] for source in ("hr", "files")} if read is None else read
+    reads = [{"type": "tool_call", "server": source, "tool": "read", "arguments": {}, "blocked": False,
+              "result_text": text} for source, text in read.items()]
+    return reads + [{"type": "tool_call", "server": server, "tool": "publish", "arguments": arguments,
+                     "blocked": blocked} for arguments in calls]
+
+
 def one_per_kind(records: list[dict], server: str | None = None) -> list[dict]:
     chosen: dict[str, dict] = {}
     for c in records:
