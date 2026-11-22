@@ -167,6 +167,17 @@ container was made to trust the interceptor; that would hand it the key. With th
 on, a guarded run with a hosted model cannot start on this machine. The embedder is not affected:
 its image is built from the host's downloads and it makes no connection.
 
+**Run again later on 23 November, after HTTPS scanning was switched off in the antivirus product
+on the host** (no change in the lab, no key, no tokens): 47 of 48.
+
+- In a plain container the five names present their real issuers and verify; `api.deepseek.com`
+  is issued by "Amazon RSA 2048 S24", as on the host.
+- In the agent, through the relay: "TLS to api.deepseek.com verifies end to end through the
+  relay", TLS 1.3, issuer CN=Amazon RSA 2048 S24, certificate names `*.deepseek.com`.
+- The other 46 checks are as before, the nine of the embedder included.
+- The one check that fails is the model list, with HTTP 401: the run was made without an API key.
+  It is no longer a TLS failure. With the key it is the check that passed in work package 1.
+
 ## The live check
 
 `tests/embedder/live_check.py WORK_DIR [--rebuild]` needs Docker and no language model. Testbed
