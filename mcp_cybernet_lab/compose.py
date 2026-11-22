@@ -50,7 +50,6 @@ UV_IMAGE = "ghcr.io/astral-sh/uv:0.9.5"
 GATEWAY_NET = "net-gateway"
 EMBED_NET = "net-embed"  # the gateway and the embedder, and nobody else
 EMBEDDER_IMAGE = "python:3.12-slim-bookworm"
-EMBEDDER_PYTHON = ("3.12", "cp312")  # the Python of that image: the wheels are chosen for it on the host
 EMBEDDER_MODULES = ["embedding.py", "embedserver.py"]  # not standard library only: their own image
 
 
@@ -314,14 +313,17 @@ def embedder_spec(tb: Testbed) -> dict | None:
         return None
     model = embedding.MODELS[name]
     return {"model": name, "repo": model["repo"], "revision": model["revision"], "dim": model["dim"],
-            "max_tokens": model["max_tokens"], "files": dict(model["files"])}
+            "max_tokens": model["max_tokens"], "files": dict(model["files"]),
+            # How long the gateway waits for one text; calls wait meanwhile, so it is kept short.
+            "timeout_s": tb.gateway.embed_timeout_s or model["timeout_s"]}
 
 
 def embedder_dockerfile(name: str) -> str:
     """The embedder image: the pinned packages, the lab's two modules, and the model's files.
 
     Everything comes from the build context: the image build fetches nothing but its base image.
-    The packages are wheels `mcl build` downloaded on the host for the image's Python. The model's
+    The packages are the wheels of the lock (embedder.lock), which `mcl build` downloaded on the
+    host with every hash checked; pip checks the hashes again when it installs them. The model's
     files were checked against their pinned hashes there, and the image build checks them again,
     so a file that is not the pinned one fails the build. The container then runs without network
     access, as an unprivileged user, on a read-only file system.
@@ -330,7 +332,7 @@ def embedder_dockerfile(name: str) -> str:
         f"FROM {EMBEDDER_IMAGE}",
         # The wheels are mounted for this one step, so they are not a layer of the image.
         "RUN --mount=type=bind,source=wheels,target=/wheels pip install --no-cache-dir --no-index "
-        "--find-links /wheels " + " ".join(embedding.REQUIREMENTS),
+        f"--find-links /wheels --require-hashes -r /wheels/{embedding.LOCK.name}",
         "COPY " + " ".join(EMBEDDER_MODULES) + " /opt/mcl/",
         "COPY models /models",
         "ENV MCL_EMBEDDING_MODELS=/models",
@@ -340,16 +342,13 @@ def embedder_dockerfile(name: str) -> str:
 
 
 def download_wheels(dest: Path) -> None:
-    """The wheels of embedding.REQUIREMENTS and what they need, for the embedder image's Python
-    and this machine's processor, downloaded here with pip."""
+    """Exactly the wheels of the lock, for the embedder image's Python and this machine's
+    processor, downloaded here. pip is told to require the locked hashes and to resolve nothing."""
     import platform
     machine = platform.machine().lower().replace("amd64", "x86_64").replace("arm64", "aarch64")
-    version, abi = EMBEDDER_PYTHON
-    cmd = [sys.executable, "-m", "pip", "download", "--quiet", "--dest", str(dest), "--only-binary", ":all:",
-           "--python-version", version, "--implementation", "cp", "--abi", abi, "--abi", "abi3", "--abi", "none"]
-    for tag in ("manylinux_2_28", "manylinux_2_27", "manylinux_2_17", "manylinux2014"):
-        cmd += ["--platform", f"{tag}_{machine}"]
-    r = subprocess.run(cmd + embedding.REQUIREMENTS, capture_output=True, text=True)
+    r = subprocess.run(embedding.pip_download(dest, machine, ["--require-hashes", "--no-deps",
+                                                              "-r", str(embedding.LOCK)]),
+                       capture_output=True, text=True)
     if r.returncode != 0:
         raise TestbedError(f"gateway.embedder: the packages of the embedder image could not be downloaded "
                            f"({sys.executable} -m pip download):\n{(r.stderr or r.stdout).strip()[-1500:]}")
@@ -377,6 +376,12 @@ def embedder_context(name: str, out: Path) -> None:
         shutil.copy(PACKAGE / m, context / m)
     (context / "wheels").mkdir()
     download_wheels(context / "wheels")
+    try:  # whatever fetched them: each file is a locked package with a locked hash, and none is missing
+        embedding.check_wheels(context / "wheels")
+    except embedding.EmbeddingError as e:
+        raise TestbedError(f"gateway.embedder: the packages of the embedder image are not those of "
+                           f"{embedding.LOCK.name}: {e}") from None
+    shutil.copy(embedding.LOCK, context / "wheels" / embedding.LOCK.name)
 
 
 def embedder_service(tb: Testbed) -> dict:
@@ -403,7 +408,7 @@ def gateway_service(tb: Testbed, runs: Path) -> dict:
     spec = embedder_spec(tb)
     if spec:  # only then: without an embedder the gateway's configuration is what it was
         config["embedder"] = {"model": spec["model"], "revision": spec["revision"],
-                              "url": f"http://{EMBEDDER}:{HTTP_PORT}"}
+                              "url": f"http://{EMBEDDER}:{HTTP_PORT}", "timeout_s": spec["timeout_s"]}
     return ({"depends_on": {EMBEDDER: {"condition": "service_healthy"}}} if spec else {}) | {
         "build": {"context": "context", "dockerfile": "../dockerfiles/gateway.Dockerfile"},
         "image": f"mcl-{tb.testbed}-gateway",
@@ -604,8 +609,10 @@ def build(loaded: Loaded, out: Path, runs: Path | None = None) -> Path:
         "guard_plugin": guard_plugin,
         "plugins": plugins,
         # The embedding model of the testbed, pinned: revision and the SHA-256 of every file. null = none.
-        "embedder": (embedder_spec(tb) or {}) | {"wheels": sorted(
-            w.name for w in (out / "embedder" / "wheels").glob("*.whl"))} if embedder_spec(tb) else None,
+        "embedder": (embedder_spec(tb) or {}) | {
+            "lock_sha256": embedding.file_sha256(embedding.LOCK),
+            "wheels": {w.name: embedding.file_sha256(w) for w in sorted((out / "embedder" / "wheels").glob("*.whl"))},
+        } if embedder_spec(tb) else None,
         "domains": [d.model_dump() for d in tb.domains],
         "servers": [{"id": s.id, "package": s.package, "path": s.path,
                      "source_sha256": tree_sha256(out / "context" / "servers" / s.id) if s.path else None,

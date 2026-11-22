@@ -13,7 +13,7 @@ client container (netprobe.py, sent to it on standard input) and must find that
 
 With an embedder (`gateway.embedder`), the embedder is one more service no client may reach, and
 three more containers are probed: every server must not reach it, by name or by address; the
-embedder itself must have no default route and reach no outside host; and the gateway must get
+embedder itself must have no default route and reach no outside host, nor the LLM relay; and the gateway must get
 an answer from it that names the testbed's model.
 
 No tokens are spent: the model API is only asked for its model list. Run it after `mcl up` and
@@ -91,7 +91,11 @@ def embedder_plans(tb: Testbed, addr: dict[str, dict[str, list[str]]], outside_a
     target = {"what": "embedder", "host": EMBEDDER, "port": HTTP_PORT,
               "addresses": sorted(addr.get(EMBEDDER, {}).get(EMBED_NET, []))}
     plans = [(s.id, "server", {"role": "server", "closed": [target]}) for s in tb.servers if s.transport == "http"]
-    plans.append((EMBEDDER, "embedder", {"role": "embedder", "outside": outside}))
+    relay = [{"what": what, "host": sid, "port": LLM_PORT,
+              "addresses": sorted(a for found in addr.get(sid, {}).values() for a in found)}
+             for what, sid in (("relay", LLM_RELAY), ("relay exit", LLM_EGRESS))] if tb.llm.egress == "relay" else []
+    # The embedder sees every text a guard embeds: it must have no path to the model's provider.
+    plans.append((EMBEDDER, "embedder", {"role": "embedder", "outside": outside, "closed": relay}))
     plans.append(("gateway", "gateway", {"role": "gateway", "embedder": {
         "url": f"http://{EMBEDDER}:{HTTP_PORT}", "model": spec["model"], "revision": spec["revision"]}}))
     return plans

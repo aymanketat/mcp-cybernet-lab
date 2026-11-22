@@ -19,7 +19,8 @@ written into the log that is open, without call ID and step numbers, and replay 
 With an embedder in the testbed (MCL_GATEWAY "embedder": {"model", "revision", "url"}), a guard's
 `context.embed` asks that service, and every answer is appended to embeddings.jsonl next to the
 task's log, keyed by the SHA-256 of the text; the text is not written. A guard embeds inside its
-hooks, which run under the gateway's lock: calls wait while a text is embedded.
+hooks, which run under the gateway's lock: calls wait while a text is embedded, at most
+"timeout_s" per text; after that the guard gets EmbedError, and so fails closed unless it handles it.
 
 A guard that raises fails closed, and the line says so in `guard_error` (null otherwise). Raised
 on the call: the call is blocked, with the reason "guard error". Raised on the result: the tool has
@@ -59,7 +60,7 @@ CONFIG = json.loads(os.environ.get("MCL_GATEWAY", '{"guard": "passthrough", "ser
 POLICY_FILE = Path(os.environ.get("MCL_POLICY_FILE", "/policy/current.json"))
 BLOCKED = -32001
 WITHHELD = -32002
-EMBED_TIMEOUT_S = 120
+EMBED_TIMEOUT_S = 5  # if the configuration names none; the build always names one
 
 
 class State:
@@ -88,7 +89,7 @@ def ask_embedder(text: str) -> tuple:
     request = urllib.request.Request(spec["url"] + "/embed", data=json.dumps({"texts": [text]}).encode(),
                                      headers={"Content-Type": "application/json"}, method="POST")
     try:
-        with urllib.request.urlopen(request, timeout=EMBED_TIMEOUT_S) as r:
+        with urllib.request.urlopen(request, timeout=spec.get("timeout_s", EMBED_TIMEOUT_S)) as r:
             answer = json.loads(r.read())
         result = answer["results"][0]
     except (OSError, ValueError, KeyError, IndexError) as e:

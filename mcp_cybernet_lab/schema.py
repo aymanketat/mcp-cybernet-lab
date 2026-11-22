@@ -152,6 +152,10 @@ class Gateway(Strict):
     embedder: str = "none"  # none, or a pinned embedding model (embedding.MODELS: e5-small, labse, bge-m3,
     # minilm-paraphrase). Adds the service `embedder` on a network of its own with the gateway, and
     # gives guards `context.embed`. The name is checked at `mcl build`.
+    embed_timeout_s: float | None = Field(None, gt=0, le=600)  # seconds the gateway waits for one text from
+    # the embedder; then the guard gets EmbedError, and fails closed unless it handles it. The gateway
+    # embeds under its lock, so every call waits that long at most. Not set = the model's own value
+    # (embedding.MODELS: a few times what a text at the model's token limit takes).
 
     _guard = field_validator("guard")(_check_id)
 

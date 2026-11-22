@@ -147,8 +147,9 @@ def main() -> int:
     if role == "server":       # a server must not reach the embedder
         closed_targets()
         return 1 if FAILED else 0
-    if role == "embedder":     # the embedder has no way out
+    if role == "embedder":     # the embedder has no way out, and no path to the LLM relay
         no_way_out("embedder")
+        closed_targets()
         return 1 if FAILED else 0
     if role == "gateway":      # and only the gateway reaches it
         embedder_answers()

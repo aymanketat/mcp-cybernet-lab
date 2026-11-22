@@ -223,6 +223,22 @@ def test_the_gateway_refuses_an_embedder_that_is_not_the_testbeds_model_or_does_
         module.ask_embedder("a text")
 
 
+def test_a_stuck_embedder_holds_a_call_for_the_timeout_and_no_longer(gateway, monkeypatch):
+    import socket
+    import time
+    listener = socket.socket()  # accepts the connection and never answers
+    listener.bind(("127.0.0.1", 0))
+    listener.listen(5)
+    module = gateway.module
+    monkeypatch.setitem(module.CONFIG["embedder"], "url", f"http://127.0.0.1:{listener.getsockname()[1]}")
+    monkeypatch.setitem(module.CONFIG["embedder"], "timeout_s", 0.3)
+    started = time.monotonic()
+    assert gateway.call("hr", 1, "who", answer="the secret plan")["code"] == -32002  # the guard raised: failed closed
+    assert time.monotonic() - started < 3
+    assert gateway.read()[-1]["guard_error"] == "on_result: EmbedError: the embedder did not answer (TimeoutError)"
+    listener.close()
+
+
 def test_the_start_line_names_the_embedding_model(gateway):
     module = gateway.module
     module.write(type="start", guard="dummy-embed", policy_version=None, labels=module.labels(),
@@ -243,7 +259,12 @@ def no_download(monkeypatch, tmp_path):
         return folder
 
     monkeypatch.setattr(embedding, "fetch", fetch)
-    monkeypatch.setattr(compose, "download_wheels", lambda dest: (dest / "numpy-0-py3-none-any.whl").write_text(""))
+    # one small "wheel", and a lock that holds exactly it
+    import hashlib
+    lock = tmp_path / "embedder.lock"
+    lock.write_text("numpy==0 \\\n    --hash=sha256:" + hashlib.sha256(b"wheel").hexdigest() + "\n")
+    monkeypatch.setattr(embedding, "LOCK", lock)
+    monkeypatch.setattr(compose, "download_wheels", lambda dest: (dest / "numpy-0-py3-none-any.whl").write_bytes(b"wheel"))
     monkeypatch.syspath_prepend(str(PLUGIN / "src"))
     import mcl_dummy_guard
     eps = {name: types.SimpleNamespace(name=name, load=lambda cls=cls: cls,
@@ -273,23 +294,47 @@ def test_an_embedder_is_a_service_of_its_own_on_a_network_only_the_gateway_share
     on_embed = sorted(name for name, s in built["services"].items() if "net-embed" in s.get("networks", []))
     assert on_embed == ["embedder", "gateway"]
     config = json.loads(built["services"]["gateway"]["environment"]["MCL_GATEWAY"])
-    assert config["embedder"] == {"model": MODEL, "revision": REVISION, "url": "http://embedder:8080"}
+    assert config["embedder"] == {"model": MODEL, "revision": REVISION, "url": "http://embedder:8080", "timeout_s": 5}
     dockerfile = (out / "dockerfiles/embedder.Dockerfile").read_text().splitlines()
     assert dockerfile == [
         "FROM python:3.12-slim-bookworm",
         "RUN --mount=type=bind,source=wheels,target=/wheels pip install --no-cache-dir --no-index "
-        "--find-links /wheels " + " ".join(embedding.REQUIREMENTS),
+        "--find-links /wheels --require-hashes -r /wheels/embedder.lock",
         "COPY embedding.py embedserver.py /opt/mcl/", "COPY models /models", "ENV MCL_EMBEDDING_MODELS=/models",
         f"RUN python3 /opt/mcl/embedding.py verify {MODEL}",
         f'CMD ["python3", "/opt/mcl/embedserver.py", "{MODEL}"]']
     files = sorted(p.relative_to(out / "embedder").as_posix() for p in (out / "embedder").rglob("*") if p.is_file())
     assert files == ["embedding.py", "embedserver.py", f"models/{MODEL}/{REVISION}/onnx/model.onnx",
-                     f"models/{MODEL}/{REVISION}/tokenizer.json", "wheels/numpy-0-py3-none-any.whl"]
+                     f"models/{MODEL}/{REVISION}/tokenizer.json", "wheels/embedder.lock",
+                     "wheels/numpy-0-py3-none-any.whl"]
     assert not (out / "context" / "embedding.py").exists()  # the other images do not get the module
     manifest = json.loads((out / "manifest.json").read_text())
     assert manifest["embedder"]["revision"] == REVISION and manifest["embedder"]["files"] == embedding.MODELS[MODEL]["files"]
     assert manifest["embedder"]["max_tokens"] == 128
-    assert manifest["embedder"]["wheels"] == ["numpy-0-py3-none-any.whl"]  # which packages went into the image
+    import hashlib
+    assert manifest["embedder"]["wheels"] == {"numpy-0-py3-none-any.whl": hashlib.sha256(b"wheel").hexdigest()}
+    assert manifest["embedder"]["lock_sha256"] == embedding.file_sha256(embedding.LOCK)
+
+
+def test_a_wheel_that_is_not_the_locked_one_stops_the_build(tmp_path, no_download, monkeypatch):
+    monkeypatch.setattr(compose, "download_wheels", lambda dest: (dest / "numpy-0-py3-none-any.whl").write_bytes(b"other"))
+    with pytest.raises(TestbedError, match="are not those of embedder.lock: numpy-0-py3-none-any.whl: not a package "
+                                           "of the lock, or not with a locked hash"):
+        compose.build(load_testbed(TESTBED), tmp_path / "b", tmp_path / "runs")
+
+
+def test_the_timeout_is_the_models_unless_the_testbed_sets_one(tmp_path, no_download):
+    out = compose.build(load_testbed(edited(tmp_path, lambda d: d["gateway"].update(embed_timeout_s=1.5))),
+                        tmp_path / "b", tmp_path / "runs")
+    built = yaml.safe_load((out / "docker-compose.yml").read_text())
+    assert json.loads(built["services"]["gateway"]["environment"]["MCL_GATEWAY"])["embedder"]["timeout_s"] == 1.5
+    assert json.loads((out / "manifest.json").read_text())["embedder"]["timeout_s"] == 1.5
+    for bad in (0, -1, 601):
+        with pytest.raises(TestbedError, match="embed_timeout_s"):
+            load_testbed(edited(tmp_path, lambda d: d["gateway"].update(embed_timeout_s=bad)))
+    assert {name: m["timeout_s"] for name, m in embedding.MODELS.items()} == {
+        "e5-small": 5, "labse": 5, "bge-m3": 30, "minilm-paraphrase": 5}
+    assert embedding.MODELS["bge-m3"]["max_tokens"] == 512  # the lab's bound, not the model's 8,192
 
 
 def test_without_an_embedder_nothing_of_it_is_built(tmp_path, monkeypatch):
@@ -346,7 +391,27 @@ def test_isolation_covers_the_embedder_from_four_sides():
         {"what": "embedder", "host": "embedder", "port": 8080, "addresses": ["10.0.7.2"]}]}
     assert plans[2][2]["outside"]["address"] == "93.184.216.34"
     assert plans[3][2]["embedder"] == {"url": "http://embedder:8080", "model": MODEL, "revision": REVISION}
+    assert plans[2][2]["closed"] == []  # no relay in this testbed
     assert isolation.embedder_plans(load_testbed(ROOT / "testbeds/enterprise-guarded.yaml").testbed, addr, None) == []
+
+
+def test_with_a_relay_the_embedder_is_probed_for_any_path_to_it(tmp_path, monkeypatch):
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "x")
+    data = yaml.safe_load((ROOT / "testbeds/enterprise-guarded.yaml").read_text())
+    data["gateway"]["embedder"] = MODEL
+    f = ROOT / "testbeds" / "tmp-relay-embedder.yaml"
+    try:
+        f.write_text(yaml.safe_dump(data))
+        tb = load_testbed(f).testbed
+    finally:
+        f.unlink()
+    assert tb.llm.egress == "relay"
+    addr = {"embedder": {"net-embed": ["10.0.7.2"]}, "llm-relay": {"net-gateway": ["10.0.9.5"], "net-public": ["10.0.2.5"]},
+            "llm-egress": {"net-public": ["10.0.2.6"]}}
+    plans = dict((service, plan) for service, _, plan in isolation.embedder_plans(tb, addr, None))
+    assert plans["embedder"]["closed"] == [
+        {"what": "relay", "host": "llm-relay", "port": 443, "addresses": ["10.0.2.5", "10.0.9.5"]},
+        {"what": "relay exit", "host": "llm-egress", "port": 443, "addresses": ["10.0.2.6"]}]
 
 
 def test_the_isolation_report_names_each_container_by_its_role():
@@ -464,3 +529,54 @@ def test_the_same_text_gives_the_same_vector_and_a_long_text_is_refused():
         first.embed_one("word " * 200)
     compute = runner.host_embedder(MODEL)
     assert guards.pack_vector(compute(texts[0])) == guards.pack_vector(tuple(float(x) for x in a[0]))
+
+
+# --- the lock of the image's packages --------------------------------------------------------------
+def test_the_lock_holds_every_package_with_a_hash_for_each_processor():
+    locked = embedding.read_lock()
+    assert set(embedding.REQUIREMENTS) <= set(locked)  # the three pinned packages, at their pinned versions
+    assert len(locked) >= len(embedding.REQUIREMENTS)   # and all they depend on
+    import re
+    for requirement, hashes in locked.items():
+        assert re.fullmatch(r"[a-z0-9.-]+==[0-9][A-Za-z0-9.]*", requirement), requirement
+        assert 1 <= len(hashes) <= len(embedding.IMAGE_MACHINES) and all(re.fullmatch(r"[0-9a-f]{64}", h) for h in hashes)
+    assert (ROOT / "mcp_cybernet_lab/embedder.lock").is_file() and '"embedder.lock"' in (ROOT / "pyproject.toml").read_text()
+
+
+def test_the_download_requires_the_locked_hashes_and_resolves_nothing(tmp_path, monkeypatch):
+    seen = {}
+
+    def run(cmd, **kwargs):
+        seen["cmd"] = cmd
+        return types.SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr(compose.subprocess, "run", run)
+    compose.download_wheels(tmp_path)
+    cmd = seen["cmd"]
+    assert cmd[1:4] == ["-m", "pip", "download"] and "--only-binary" in cmd
+    assert cmd[-4:] == ["--require-hashes", "--no-deps", "-r", str(embedding.LOCK)]
+    assert cmd[cmd.index("--python-version") + 1] == "3.12" and "cp312" in cmd
+
+
+def test_wheels_are_checked_against_the_lock_file_by_file(tmp_path):
+    import hashlib
+    lock = tmp_path / "embedder.lock"
+    good, also = hashlib.sha256(b"one").hexdigest(), hashlib.sha256(b"two").hexdigest()
+    lock.write_text(f"# comment\nfirst-pkg==1.0 \\\n    --hash=sha256:{good} \\\n    --hash=sha256:{'0' * 64}\n"
+                    f"second==2.0 \\\n    --hash=sha256:{also}\n")
+    assert embedding.read_lock(lock) == {"first-pkg==1.0": {good, "0" * 64}, "second==2.0": {also}}
+    wheels = tmp_path / "wheels"
+    wheels.mkdir()
+    (wheels / "first_pkg-1.0-py3-none-any.whl").write_bytes(b"one")
+    with pytest.raises(embedding.EmbeddingError, match=r"not downloaded: \['second==2.0'\]"):
+        embedding.check_wheels(wheels, lock)
+    (wheels / "second-2.0-cp312-cp312-manylinux_2_28_x86_64.whl").write_bytes(b"two")
+    assert embedding.check_wheels(wheels, lock) == {"first_pkg-1.0-py3-none-any.whl": good,
+                                                    "second-2.0-cp312-cp312-manylinux_2_28_x86_64.whl": also}
+    (wheels / "second-2.0-cp312-cp312-manylinux_2_28_x86_64.whl").write_bytes(b"changed")
+    with pytest.raises(embedding.EmbeddingError, match="not a package of the lock, or not with a locked hash"):
+        embedding.check_wheels(wheels, lock)
+    (wheels / "second-2.0-cp312-cp312-manylinux_2_28_x86_64.whl").write_bytes(b"two")
+    (wheels / "third-3.0-py3-none-any.whl").write_bytes(b"three")  # a package nobody locked
+    with pytest.raises(embedding.EmbeddingError, match="third-3.0-py3-none-any.whl: not a package of the lock"):
+        embedding.check_wheels(wheels, lock)
