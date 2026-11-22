@@ -11,7 +11,9 @@ sidecar) is not in this change; it follows on its own branch.
 | First | `3e55305` (code), `f90f6cd` (this note) | Plugins, the context, the numbered steps, `mcl replay` |
 | Second, after review of the first report | the two commits after `f90f6cd` | A guard that raises fails closed and is logged. Name clashes are refused at build. Plugins are built into wheels on the host, so any build backend works. The rung replay of 22 November was run again on the new code. |
 
-The note describes the code as it is after the second round.
+| Third, after review of the code | the two commits after `2d1d62d` | The log holds exactly the steps the guard saw: an allowed call its server never answers is logged; a result that returns after the next task has started is never matched to a call of that task, and replay skips it; `mcl check-coverage` reports gaps in the step numbers. The clash check is narrowed to the name in use and to listed plugins. |
+
+The note describes the code as it is after the third round.
 
 **Outcome.** A guard can now live in its own package and run in the gateway without a change to the
 lab. The gateway log records, for every tool call, the server's label, a call ID and the order in
@@ -52,10 +54,12 @@ The contract:
   built-in guards do. `guards.foreign_imports` reads the import statements of the plugin's code and
   lists any other. An import made by a function call (`importlib.import_module`) is not seen by
   that check; it still fails when the guard is loaded in the image, where nothing else is installed.
-- **A name means one thing.** `mcl build` of a testbed with a gateway refuses when two plugins
-  register the same guard name, or when a plugin registers `passthrough`, `taint` or `none`. The
-  message names both sides. This is checked twice: among the plugins installed on the host (what
-  replay will load) and among the wheels built from `gateway.plugins` (what the gateway will load).
+- **A name in use means one thing.** A clash is two plugins registering one guard name, or a plugin
+  registering `passthrough`, `taint` or `none`. `mcl build` refuses, naming both sides, in two
+  cases: the name the testbed uses is ambiguous among the plugins installed on the host; or a
+  plugin the testbed lists clashes with a built-in name, another listed plugin or an installed
+  one. `mcl replay` refuses when the name it is to replay is ambiguous. Any other clash among
+  installed plugins is a warning at `mcl build` and `mcl validate`, and stops nothing.
 - **Interface.** `reset`, `on_call` and `on_result`, unchanged. Subclassing `Guard` is the simple
   way; a class with those three methods also works.
 - **Installed on the host too.** `mcl build` checks the name against the built-in guards and the
@@ -134,8 +138,9 @@ The log keeps one line per tool call. Six fields are new, appended after the old
 | `seq_call` | the number of the step at which the call was put to the guard (`on_call`) |
 | `seq_result` | the number of the step at which its result was put to the guard (`on_result`); `null` when it never was |
 
-| `guard_error` | `null`, or where and what the guard raised (next section) |
+| `guard_error` | `null`, or where and what the guard raised (below) |
 | `result_withheld` | `true` when the result was kept from the client because the guard raised on it |
+| `upstream_error` | only on the line of an allowed call that its server did not answer: what went wrong |
 
 The `start` line gains `labels` (server to label) and `plugins`.
 
@@ -152,6 +157,29 @@ now: the gateway never passed an error result to `on_result`, and `guards.replay
 does. A result is put to the guard only if there is one and it is not an error; that step then has
 no number. The 18 November logs hold four error results (two in `taint-1`, two in `pass-1`); the
 decisions on those runs are the same with and without them.
+
+## The log holds exactly the steps the guard saw
+
+Replay is exact only if every step the guard took is in the log, and nothing else is applied.
+Two failure paths broke that, and are closed:
+
+- **An allowed call that gets no answer.** When the server is down or breaks off in mid-answer,
+  the proxy answered HTTP 502 and the gateway wrote nothing, so the call's `seq_call` was missing
+  from the log. The line is now written: `decision` "allow", `upstream_error`, no result,
+  `seq_result` null, `http_status` 502.
+- **A result that returns after the next task has started.** Its guard is gone. The gateway used to
+  look the call up by MCP session and request ID; a call of the new task with the same pair would
+  have been taken for it, and the old result put to the new guard. Each request now keeps its own
+  call together with the task it belongs to, so this cannot happen. The late line is written into
+  the open log with its server and tool and without call ID and step numbers.
+- **Replay** of a task logged with step numbers applies only the numbered lines. A line without
+  numbers is not put to the guard and comes back marked `replay_skipped`; `mcl replay` lists such
+  lines as "not replayed". A task logged with no numbers at all (an old log) is replayed in line
+  order, as before.
+- **`mcl check-coverage`** checks, for every task logged with step numbers, that they run 1..N,
+  each once, and that every tool-call line has one. A gap, a repeat or a line without a number is
+  listed and fails the check (exit status 1). It also counts the allowed calls no server answered.
+  For logs written before step numbers existed it prints what it printed before.
 
 ## A guard that raises
 
@@ -225,7 +253,7 @@ build and run folders outside the repository, the plugin built with `setuptools`
 | `c6` `hr.list_tables` | allowed | a private result |
 | `c7` `paste.publish` | blocked | "call c7 to public server paste after the result of call c6 from a private server" |
 
-All checks passed: `mcl smoke` 2 of 2 connections; what the client got; labels and the plugin's
+All checks passed, again on the code of the third round: `mcl smoke` 2 of 2 connections; what the client got; labels and the plugin's
 tree hash in the `start` line, equal to the manifest's; call IDs `c1` to `c7`; step numbers
 (1, 2), (3, none), (4, 5), (6, none), (7, 8), (9, 10), (11, none); `guard_error` on `c4` and `c5`
 only, with the withheld result kept in the log; and `mcl replay` gave the same seven decisions,
@@ -257,11 +285,14 @@ show that they still block what they blocked.
 
 ## Tests
 
-526 tests pass (480 before): `tests/test_guard_plugins.py` holds the 46 new ones. They register the
+538 tests pass (480 before): `tests/test_guard_plugins.py` holds the 58 new ones. They register the
 dummy plugin themselves and write its wheel by hand, so they need neither Docker nor an installed
 plugin. One test does the real wheel build with pip and is skipped without a connection to the
 package index. Both hooks of a raising guard are tested in `Session`, in the gateway's two hooks,
-in replay and in `mcl replay`; every kind of name clash is tested on the host and among a testbed's plugins. Among them: an error
+in replay and in `mcl replay`; every kind of name clash is tested on the host and among a testbed's
+plugins, the refusals and the warnings. The two failure paths of the third round are tested through
+the gateway served over HTTP in front of a closed port and of a server that hangs up, and with a
+late result whose request ID is that of a call of the new task. Among them: an error
 result never reaches a guard, live or in replay; a log whose line order differs from its step order
 is replayed in step order, and gives another decision once the numbers are removed; the gateway's
 two hooks write the new fields with the old ones first and in their old order; `mcl replay` refuses
@@ -273,12 +304,12 @@ a plugin whose tree hash is not the run's.
 - The tree hash covers the plugin's top-level package, not its `pyproject.toml`.
 - `mcl build` needs pip in the lab's Python when a testbed lists plugins, and the package index
   when the plugin's build backend is not already cached.
-- The clash check among installed plugins applies to every testbed with a gateway, also one that
-  uses a built-in guard: a clashing plugin has to be uninstalled or renamed.
+- A testbed without plugins builds with neither pip nor the package index, as before (tested).
 - `guards.py check` makes the guard once with an empty policy, as the gateway does when no policy
   file exists. A plugin guard must accept that.
-- If a new task starts while a call is still at its server, that call's result is logged without a
-  call ID and is not put to the new task's guard. `mcl run` does not start a task before the
-  agent of the previous one has ended.
+- A late result is logged in the task that is open when it returns, so the task it belongs to
+  keeps a gap in its step numbers, which `mcl check-coverage` reports. `mcl run` does not start a
+  task before the agent of the previous one has ended, so this needs a call that outlives its agent.
+- A result that returns when no task is open (after the last `stop`) is not logged at all.
 - Not run: a plugin with more than one guard, two plugins in one testbed (the folder names must
   differ; that is checked), and a live run with a model through a plugin guard.
