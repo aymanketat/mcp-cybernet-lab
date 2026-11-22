@@ -158,6 +158,81 @@ def render(template: tuple, record, arabic_digits: bool = False) -> str:
     return text.format(**fields(record, language, arabic_digits))
 
 
+# --- the pair set --------------------------------------------------------------------------------
+SEED = 20261122      # the seed of the Layer-1 suite: these records are planted in no testbed
+RECORDS = 50         # fact records, and as many person records
+HARD_PER_PAIR = {"fact": 1, "person": 5}  # other records a sink template is filled with, per positive
+
+
+def family(key: str) -> str:
+    """What a sink template does to the record: close, reordered, note, three-facts, in-a-post,
+    sentence, short, fields; with -translit where the company name is transliterated."""
+    return key.split("-", 1)[1]
+
+
+def pair_set(seed: int = SEED, records: int = RECORDS) -> dict:
+    """The texts and the comparisons of the calibration, fixed by the seed.
+
+    Every comparison is (a source text, a sink payload): a span a private server returned against
+    what an agent sends to a public server, the whole payload as one text.
+
+      positive   the payload states the same record as the source, through a sink template
+      hard       the same sink template filled with another record of the same kind
+      easy       an ordinary line that carries no record
+
+    Returns {"texts": {id: text}, "pairs": [{"class", "kind", "source", "sink", "source_lang",
+    "sink_lang", "family", "digits"}]}, where source and sink are text ids. Arabic texts come with
+    ASCII digits and with Arabic-Indic digits; the lab's person record has Arabic-Indic digits only.
+    """
+    from mcp_cybernet_lab import seeding
+    rng_fact, rng_person = seeding.stream(seed, "embedpairs", "fact"), seeding.stream(seed, "embedpairs", "person")
+    facts, people = [], []
+    while len(facts) < records:  # distinct companies and distinct people, so "another record" is another one
+        r = seeding.fact_record(rng_fact)
+        if r["entity"]["en"] not in {f["entity"]["en"] for f in facts}:
+            facts.append(r)
+    while len(people) < records:
+        r = seeding.arabic_record(rng_person)
+        if r.split(ID_WORDS)[0] not in {q.split(ID_WORDS)[0] for q in people} or len(people) >= len(AR_FIRST) * len(AR_LAST):
+            people.append(r)
+    texts: dict[str, str] = {}
+    pairs: list[dict] = []
+
+    def put(text_id: str, text: str) -> str:
+        texts[text_id] = text
+        return text_id
+
+    def variants(template: tuple) -> list[bool]:
+        return [False, True] if template[0] == "ar" else [False]
+
+    for kind, recs, sources, sinks in (("fact", facts, FACT_SOURCES, FACT_SINKS),
+                                       ("person", people, PERSON_SOURCES, PERSON_SINKS)):
+        for i, record in enumerate(recs):
+            source_ids = []
+            for skey, source in sources.items():
+                for arabic in ([True] if skey == "ps-ar" else variants(source)):
+                    source_ids.append((put(f"{kind}{i:02d}/{skey}/{'ar' if arabic else 'ascii'}",
+                                           render(source, record, arabic)), source[0]))
+            for key, sink in sinks.items():
+                for arabic in variants(sink):
+                    digits_name = "arabic-indic" if arabic else "ascii"
+                    own = put(f"{kind}{i:02d}/{key}/{digits_name}", render(sink, record, arabic))
+                    others = [(i + step) % len(recs) for step in range(1, HARD_PER_PAIR[kind] + 1)]
+                    for source_id, source_lang in source_ids:
+                        common = {"kind": kind, "source": source_id, "source_lang": source_lang,
+                                  "sink_lang": sink[0][:2], "family": family(key), "digits": digits_name}
+                        pairs.append({"class": "positive", "sink": own} | common)
+                        for j in others:
+                            other = put(f"{kind}{j:02d}/{key}/{digits_name}", render(sink, recs[j], arabic))
+                            pairs.append({"class": "hard", "sink": other} | common)
+            for source_id, source_lang in source_ids:
+                for key, (language, text) in EASY_DECOYS.items():
+                    pairs.append({"class": "easy", "kind": kind, "source": source_id, "source_lang": source_lang,
+                                  "sink": put(f"ordinary/{key}", text), "sink_lang": language, "family": "ordinary",
+                                  "digits": "ascii"})
+    return {"texts": texts, "pairs": pairs}
+
+
 def reading_sheet() -> str:
     """Every template with one example, for a reader of Arabic to check the wording. The example
     records are written here by hand; they come from no seed and are planted nowhere."""

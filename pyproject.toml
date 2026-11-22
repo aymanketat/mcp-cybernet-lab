@@ -13,6 +13,9 @@ dependencies = ["pyyaml>=6", "pydantic>=2.6"]
 
 [project.optional-dependencies]
 dev = ["pytest>=8"]
+# Sentence embeddings on the host (mcp_cybernet_lab/embedding.py): calibration, and replay of a guard
+# that needs a vector no run recorded. The versions are those the calibration was run with.
+embed = ["numpy==2.5.5", "onnxruntime==1.32.0", "tokenizers==0.23.3"]
 
 [project.scripts]
 mcp-cybernet-lab = "mcp_cybernet_lab.cli:main"
