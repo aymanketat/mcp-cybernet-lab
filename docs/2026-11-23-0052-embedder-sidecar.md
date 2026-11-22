@@ -178,6 +178,18 @@ on the host** (no change in the lab, no key, no tokens): 47 of 48.
 - The one check that fails is the model list, with HTTP 401: the run was made without an API key.
   It is no longer a TLS failure. With the key it is the check that passed in work package 1.
 
+**And once more with the API key** (23 November, the key in the environment for `mcl up` only; no
+tokens: the provider is asked for its model list and nothing else): 48 of 48.
+
+- "model API answers (GET /models with the key, no tokens)": HTTP 200, 2 models listed, the
+  testbed's model `deepseek-flash` among them.
+- "TLS to api.deepseek.com verifies end to end through the relay": TLS 1.3, issuer CN=Amazon RSA
+  2048 S24, certificate names `*.deepseek.com`.
+- The 46 other checks as before. The key is in no output of the check.
+
+So with an embedder and the LLM relay in one testbed, the agent reaches its model and the gateway
+and nothing else, no server reaches the embedder, and the embedder reaches nothing, the relay included.
+
 ## The live check
 
 `tests/embedder/live_check.py WORK_DIR [--rebuild]` needs Docker and no language model. Testbed
@@ -249,5 +261,6 @@ give the same bytes, and a long text is refused. The test plugin now registers t
   payload into windows is not built here, and the calibration did not test it.
 - **The gateway's lock.** Calls wait while a guard embeds, now at most the wait above per text. A
   request that timed out is still being computed in the embedder, so the next one waits behind it.
-- **Not run:** an embedder together with the LLM relay in one testbed, the three larger models as
-  images, and a live run with a language model through an embedding guard.
+- **Not run:** the three larger models as images, and a live run with a language model through an
+  embedding guard. (An embedder together with the LLM relay was started and checked for isolation,
+  above; no task was run on it.)
