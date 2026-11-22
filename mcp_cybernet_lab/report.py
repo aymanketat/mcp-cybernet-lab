@@ -191,11 +191,14 @@ def replayed(r: dict) -> str:
     plugin, calls = r["guard_plugin"], r["calls"]
     origin = (f"plugin {plugin['package']} {plugin['version']}, tree hash {plugin['tree_sha256']}"
               if plugin else "built in")
-    same = [c for c in calls if c["logged"] == c["replayed"]]
+    same = [c for c in calls if replay_same(c)]
 
     def counts(key: str) -> str:
         n = Counter(c[key] for c in calls)
-        return f"allow {n['allow']}, block {n['block']}"
+        errors = sum(bool(c[f"{key}_error"]) for c in calls)
+        withheld = sum(c[f"{key}_withheld"] for c in calls)
+        return f"allow {n['allow']}, block {n['block']}" + (
+            f"; the guard raised in {errors} calls ({withheld} results withheld)" if errors else "")
 
     lines = [f"Run {r['run']} replayed: {len(calls)} tool calls in {r['task_runs']} task runs",
              f"  guard   {r['guard']} ({origin})"
@@ -205,11 +208,22 @@ def replayed(r: dict) -> str:
              f"  replayed  {counts('replayed')}",
              f"  same decision as logged: {len(same)} of {len(calls)}"
              + ("   (the run's own guard and policy: every decision should be the same)" if r["own"] else "")]
+    def said(c: dict, key: str) -> str:
+        return c[key] + (", result withheld" if c[f"{key}_withheld"] else "") + (
+            f", guard raised {c[f'{key}_error']}" if c[f"{key}_error"] else "")
+
     for c in calls:
-        if c["logged"] != c["replayed"]:
-            lines.append(f"    {c['task']} {c['call_id']} {c['server']}.{c['tool']}: logged {c['logged']}, "
-                         f"replayed {c['replayed']}" + (f" ({c['reason']})" if c["reason"] else ""))
+        if not replay_same(c):
+            lines.append(f"    {c['task']} {c['call_id']} {c['server']}.{c['tool']}: logged {said(c, 'logged')}; "
+                         f"replayed {said(c, 'replayed')}"
+                         + (f" ({c['reason']})" if c["reason"] and not c["replayed_error"] else ""))
     return "\n".join(lines)
+
+
+def replay_same(c: dict) -> bool:
+    """Is a replayed call what was logged: the decision, and what the guard raised, if it did?"""
+    return (c["logged"], c["logged_error"], c["logged_withheld"]) == \
+        (c["replayed"], c["replayed_error"], c["replayed_withheld"])
 
 
 def compare(run_a: Path, run_b: Path, key: str = "leaked") -> str:
@@ -253,7 +267,7 @@ def gateway_coverage(run: Path) -> tuple[bool, str]:
         return False, f"Run {run.name} was made without a gateway (gateway.guard none): nothing to compare"
     rows = load_results(run)
     in_trace = in_gateway = unknown = blocked_trace = blocked_gateway = 0
-    decisions, starts, methods, problems = Counter(), Counter(), Counter(), []
+    decisions, starts, methods, problems, guard_errors = Counter(), Counter(), Counter(), [], Counter()
     for r in rows:
         name = r.get("run") or f"{r['task']}-r{r.get('repeat', 0)}"
         trace, log = _jsonl(run / name / "trace.jsonl"), _jsonl(run / name / "gateway.jsonl")
@@ -270,6 +284,8 @@ def gateway_coverage(run: Path) -> tuple[bool, str]:
                 methods[e.get("method")] += 1
             elif e.get("type") == "tool_call":
                 decisions[e.get("decision")] += 1
+                if e.get("guard_error"):
+                    guard_errors[(e.get("decision"), bool(e.get("result_withheld")))] += 1
         elsewhere = sum(e.get("task") != name for e in log)
         in_trace += len(sent)
         in_gateway += len(seen)
@@ -297,6 +313,10 @@ def gateway_coverage(run: Path) -> tuple[bool, str]:
              f"gateway decisions: {counts(decisions)}",
              f"  guard and policy version at task start: {counts(starts)}",
              f"  other MCP messages in the gateway logs: {counts(methods)}"]
+    if guard_errors:
+        lines.append(f"  calls in which the guard raised (failed closed): {sum(guard_errors.values())}   "
+                     f"blocked {guard_errors[('block', False)]}, "
+                     f"result withheld after the tool ran {guard_errors[('allow', True)]}")
     if unknown:
         lines.append(f"  calls to a tool no server offers (answered by the agent itself, never sent): {unknown}")
     return not problems and bool(rows), "\n".join(lines + problems)

@@ -15,10 +15,14 @@ Run outputs go to runs/<testbed>/ (outside build/, so a rebuild never deletes re
 
 from __future__ import annotations
 
+import configparser
 import hashlib
 import json
 import shutil
 import subprocess
+import sys
+import tempfile
+import zipfile
 from datetime import datetime, timezone
 from pathlib import Path
 from urllib.parse import urlsplit
@@ -26,7 +30,7 @@ from urllib.parse import urlsplit
 import yaml
 
 from . import __version__
-from .guards import default_policy, guard_info
+from .guards import default_policy, files_sha256, guard_info, is_code, name_clashes
 from .loader import Loaded, TestbedError, check_buildable
 from .schema import LLM_EGRESS, LLM_RELAY, Client, Server, Service, Testbed
 from .seeding import canary_file_text, make_canaries, stream
@@ -192,32 +196,104 @@ def client_service(tb: Testbed, c: Client, runs: Path) -> dict:
     return svc
 
 
+ENTRY_POINTS = "mcp_cybernet_lab.guards"
 PLUGIN_SITE = "/opt/mcl/site"  # where guard plugins are installed in the gateway image
 # In the image the lab's modules are plain files in /opt/mcl. This makes the import a plugin uses,
 # `mcp_cybernet_lab.guards`, name the very module the gateway runs (/opt/mcl/guards.py).
 GUARDS_SHIM = "import sys\n\nimport guards\n\nsys.modules[__name__] = guards\n"
 
 
-def plugin_folders(loaded: Loaded) -> dict[str, Path]:
-    """Name in the build context -> source folder, for every entry of gateway.plugins."""
-    return {(loaded.path.parent / p).resolve().name: (loaded.path.parent / p).resolve()
-            for p in loaded.testbed.gateway.plugins}
+def build_wheel(source: Path, dest: Path) -> Path:
+    """Build a plugin folder into a wheel, on this machine, with whatever build backend it names.
+
+    The folder is copied first, so the build leaves nothing in it. pip may fetch the build backend
+    here; the image then installs the finished wheel and fetches nothing.
+    """
+    with tempfile.TemporaryDirectory() as tmp:
+        copy, made = Path(tmp) / source.name, Path(tmp) / "wheel"
+        shutil.copytree(source, copy, ignore=shutil.ignore_patterns(
+            "__pycache__", "*.egg-info", "build", "dist", ".venv", ".git"))
+        r = subprocess.run([sys.executable, "-m", "pip", "wheel", "--no-deps", "--quiet", "--wheel-dir", str(made),
+                            str(copy)], capture_output=True, text=True)
+        wheels = sorted(made.glob("*.whl")) if made.is_dir() else []
+        if r.returncode != 0 or len(wheels) != 1:
+            raise TestbedError(f"gateway.plugins: '{source}' could not be built into a wheel "
+                               f"({sys.executable} -m pip wheel):\n{(r.stderr or r.stdout).strip()[-1500:]}")
+        dest.mkdir(parents=True, exist_ok=True)
+        return Path(shutil.copy(wheels[0], dest / wheels[0].name))
 
 
-def gateway_plugin_lines(tb: Testbed, names: list[str], info: dict | None) -> list[str]:
+def wheel_guards(wheel: Path) -> dict:
+    """What a plugin wheel holds: {"package", "version", "guards": [{"guard", "tree_sha256"}]}.
+
+    The tree hash is taken over the files of the top-level package the guard class is in, exactly
+    as guards.tree_sha256 takes it over the installed package (in the image and on the host).
+    """
+    with zipfile.ZipFile(wheel) as z:
+        names = z.namelist()
+        meta = next(n for n in names if n.endswith(".dist-info/METADATA"))
+        fields = dict(line.split(": ", 1) for line in z.read(meta).decode("utf-8").split("\n\n")[0].splitlines()
+                      if ": " in line and line.split(": ", 1)[0] in ("Name", "Version"))
+        eps = configparser.ConfigParser(delimiters=("=",))
+        eps.optionxform = str
+        entry = next((n for n in names if n.endswith(".dist-info/entry_points.txt")), None)
+        if entry:
+            eps.read_string(z.read(entry).decode("utf-8"))
+        found = []
+        for guard, target in (eps[ENTRY_POINTS].items() if eps.has_section(ENTRY_POINTS) else []):
+            top = target.split(":")[0].strip().split(".")[0]
+            files = {n[len(top) + 1:]: z.read(n) for n in names
+                     if n.startswith(top + "/") and not n.endswith("/") and is_code(n)}
+            if f"{top}.py" in names:
+                files = {f"{top}.py": z.read(f"{top}.py")}
+            found.append({"guard": guard, "tree_sha256": files_sha256(files)})
+    return {"package": fields.get("Name"), "version": fields.get("Version"), "guards": found}
+
+
+def build_plugins(loaded: Loaded, out: Path, guard_plugin: dict | None) -> list[dict]:
+    """Build every folder of gateway.plugins into a wheel in the build context. One entry per plugin.
+
+    Refused: a guard name that two of them register, or that is a built-in guard; a configured
+    plugin guard that none of them registers; and a configured guard whose code installed on this
+    machine (which `mcl replay` will load) is not the code of the wheel (which the gateway will run).
+    """
+    tb, plugins = loaded.testbed, []
+    for p in tb.gateway.plugins:
+        source = (loaded.path.parent / p).resolve()
+        wheel = build_wheel(source, out / "context" / "plugins")
+        plugins.append({"name": source.name, "path": str(source), "wheel": wheel.name} | wheel_guards(wheel))
+    clashes = name_clashes([(g["guard"], p["package"]) for p in plugins for g in p["guards"]], "in gateway.plugins")
+    if clashes:
+        raise TestbedError("guard names must mean one thing:\n" + "\n".join(f"  - {c}" for c in clashes))
+    if guard_plugin:
+        name = guard_plugin["guard"]
+        built = [g["tree_sha256"] for p in plugins for g in p["guards"] if g["guard"] == name]
+        if not built:
+            raise TestbedError(f"gateway.guard '{name}' is not registered by any folder in gateway.plugins "
+                               f"(they register: {sorted(g['guard'] for p in plugins for g in p['guards']) or 'nothing'})")
+        if built != [guard_plugin["tree_sha256"]]:
+            raise TestbedError(
+                f"gateway.guard '{name}': the code installed on this machine ({guard_plugin['package']} "
+                f"{guard_plugin['version']}, tree hash {guard_plugin['tree_sha256']}) is not the code in "
+                f"gateway.plugins (tree hash {built[0]}). Replay would not run what the gateway runs: "
+                f"install the folder here (pip install -e <folder>)")
+    return plugins
+
+
+def gateway_plugin_lines(tb: Testbed, wheels: list[str], info: dict | None) -> list[str]:
     """Dockerfile lines that put guard plugins into the gateway image. None without plugins.
 
-    Installed without dependencies and without a package index: the build fetches nothing for a
-    plugin, and a plugin that needs more than the standard library fails the last step, which
-    loads the configured guard and compares its code with the code on the host (the tree hash).
-    A plugin's build backend must therefore be one uv can run offline (uv_build).
+    The wheels were built on the host (build_wheel). The image installs them without dependencies
+    and without a package index, so its build fetches nothing for a plugin, whatever the plugin's
+    build backend. A plugin that needs more than the standard library fails the last step, which
+    loads the configured guard and compares its code with the wheel's (the tree hash).
     """
-    if not names:
+    if not wheels:
         return []
     return ["COPY mcp_cybernet_lab /opt/mcl/mcp_cybernet_lab",
             "COPY plugins /opt/mcl-plugins",
             f"RUN uv pip install --no-deps --no-index --python /usr/bin/python3 --target {PLUGIN_SITE} "
-            + " ".join(f"/opt/mcl-plugins/{n}" for n in names),
+            + " ".join(f"/opt/mcl-plugins/{w}" for w in wheels),
             f"ENV PYTHONPATH={PLUGIN_SITE}",
             f"RUN python3 /opt/mcl/guards.py check {tb.gateway.guard}" + (f" {info['tree_sha256']}" if info else "")]
 
@@ -354,7 +430,7 @@ def build(loaded: Loaded, out: Path, runs: Path | None = None) -> Path:
     (out / "canaries.json").write_text(json.dumps(canaries, indent=1, ensure_ascii=False), encoding="utf-8")
 
     # Containers.
-    plugins = plugin_folders(loaded)
+    plugins: list[dict] = []
     guard_plugin = guard_info(tb.gateway.guard) if tb.gateway.guard != "none" else None
     services = {}
     for s in tb.servers:
@@ -368,17 +444,15 @@ def build(loaded: Loaded, out: Path, runs: Path | None = None) -> Path:
     if tb.gateway.guard != "none":
         (out / "policy").mkdir()
         (out / "policy" / "current.json").write_text(json.dumps(initial_policy(loaded), indent=1))
+        plugins = build_plugins(loaded, out, guard_plugin)
         if plugins:
-            for name, src in plugins.items():
-                shutil.copytree(src, out / "context" / "plugins" / name, ignore=shutil.ignore_patterns(
-                    "__pycache__", "*.egg-info", "build", "dist", ".venv", ".git"))
             shim = out / "context" / "mcp_cybernet_lab"
             shim.mkdir()
             (shim / "__init__.py").write_text("")
             (shim / "guards.py").write_text(GUARDS_SHIM)
         (out / "dockerfiles" / "gateway.Dockerfile").write_text(dockerfile(
             [], ["python3", "/opt/mcl/gateway.py", "serve"],
-            extra=gateway_plugin_lines(tb, list(plugins), guard_plugin)))
+            extra=gateway_plugin_lines(tb, [p["wheel"] for p in plugins], guard_plugin)))
         services["gateway"] = gateway_service(tb, runs)
     if any(v.builtin for v in tb.services):
         (out / "dockerfiles" / "sink.Dockerfile").write_text(dockerfile([], ["python3", "/opt/mcl/sink.py"]))
@@ -416,11 +490,11 @@ def build(loaded: Loaded, out: Path, runs: Path | None = None) -> Path:
         "runs": str(runs),
         "llm": tb.llm.model_dump(),
         "gateway": tb.gateway.model_dump(),
-        # A plugin guard: its package, version and the hash of its code as installed on this
-        # machine (the image build fails unless the image holds the same code). null = built in.
+        # A plugin guard: its package, version and the tree hash of its code. The wheel in the
+        # build context, the gateway image and this machine hold the same code, or the build
+        # fails. null = a built-in guard. plugins: every wheel built from gateway.plugins.
         "guard_plugin": guard_plugin,
-        "plugins": [{"name": n, "path": str(p), "source_sha256": tree_sha256(out / "context" / "plugins" / n)}
-                    for n, p in plugins.items()],
+        "plugins": plugins,
         "domains": [d.model_dump() for d in tb.domains],
         "servers": [{"id": s.id, "package": s.package, "path": s.path,
                      "source_sha256": tree_sha256(out / "context" / "servers" / s.id) if s.path else None,

@@ -277,7 +277,10 @@ def replay_run(run: Path, guard: str | None = None, policy_file: Path | None = N
             calls.append({"task": task, "call_id": e["replay_call_id"], "server": e["server"], "tool": e["tool"],
                           "label": labels.get(e["server"]), "seq_call": e.get("seq_call"),
                           "seq_result": e.get("seq_result"), "logged": e.get("decision"),
-                          "replayed": "allow" if e["replay_allowed"] else "block", "reason": e["replay_reason"]})
+                          "replayed": "allow" if e["replay_allowed"] else "block", "reason": e["replay_reason"],
+                          # A guard that raised: where and what, and whether the result was withheld.
+                          "logged_error": e.get("guard_error"), "replayed_error": e["replay_error"],
+                          "logged_withheld": bool(e.get("result_withheld")), "replayed_withheld": e["replay_withheld"]})
     return {"run": run.name, "testbed": manifest.get("testbed"), "guard": name, "guard_ran": ran,
             "guard_plugin": info, "policy": source, "policy_version": policy.get("version"),
             "policy_sha256": policy_sha256(policy), "own": name == ran and not policy_file,

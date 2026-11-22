@@ -202,7 +202,7 @@ def cmd_rescore(args) -> int:
 
 
 def cmd_replay(args) -> int:
-    from .report import replayed
+    from .report import replay_same, replayed
     from .runner import replay_run
     run, out = Path(args.run), Path(args.out) if args.out else None
     if out and run.resolve() in out.resolve().parents:
@@ -218,7 +218,7 @@ def cmd_replay(args) -> int:
         print(f"decisions: {out}")
     else:
         print("nothing was written; --out FILE keeps the decisions")
-    differ = sum(c["logged"] != c["replayed"] for c in result["calls"])
+    differ = sum(not replay_same(c) for c in result["calls"])
     return 1 if result["own"] and differ else 0
 
 

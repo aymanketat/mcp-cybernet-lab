@@ -5,15 +5,18 @@ reproduces its decisions from the gateway log. Needs Docker; uses no model and n
     pip install -e tests/plugins/dummy-guard        (once: the build and the replay load the plugin here)
     python tests/plugins/live_check.py WORK_DIR     (an empty folder for the build and the run)
 
-It builds and starts tests/plugins/dummy-testbed.yaml, makes five tool calls from the client
+It builds and starts tests/plugins/dummy-testbed.yaml, makes seven tool calls from the client
 container through the gateway, stops the testbed, and replays the log. The guard `dummy` blocks a
-call to a public server once a private server has returned a result. Expected, in order:
+call to a public server once a private server has returned a result, and the policy
+(dummy-policy.yaml) makes it raise once in each hook. Expected, in order:
 
-    c1 paste.publish   allowed   nothing private seen yet
-    c2 hr.query        allowed   invalid SQL: an error result, which is never put to a guard
-    c3 paste.publish   allowed   so the guard has still seen nothing private
-    c4 hr.list_tables  allowed   a private result
-    c5 paste.publish   blocked   because of the result of c4
+    c1 paste.publish      allowed   nothing private seen yet
+    c2 hr.query           allowed   invalid SQL: an error result, which is never put to a guard
+    c3 paste.publish      allowed   so the guard has still seen nothing private
+    c4 paste.recent       blocked   the guard raises in on_call: fails closed, reason "guard error"
+    c5 hr.describe_table  withheld  the guard raises in on_result: the tool ran, the client gets an error
+    c6 hr.list_tables     allowed   a private result
+    c7 paste.publish      blocked   because of the result of c6
 
 Exit status 0 when the live decisions, the log fields and the replay are all as expected.
 """
@@ -32,9 +35,12 @@ RUN, TASK = "live", "check-r0"
 CALLS = [("paste", "publish", {"title": "one", "text": "first note"}),
          ("hr", "query", {"sql": "SELEC nothing FROM nowhere"}),
          ("paste", "publish", {"title": "two", "text": "second note"}),
+         ("paste", "recent", {}),
+         ("hr", "describe_table", {"table": "employees"}),
          ("hr", "list_tables", {}),
          ("paste", "publish", {"title": "three", "text": "third note"})]
-EXPECTED = ["allow", "allow", "allow", "allow", "block"]
+LIVE = ["allow", "allow", "allow", "block", "withheld", "allow", "block"]   # what the client gets
+LOGGED = ["allow", "allow", "allow", "block", "allow", "allow", "block"]    # the guard's decision on the call
 
 # Runs in the client container: one MCP session per server, the calls in order, one JSON line each.
 DRIVER = r"""
@@ -51,7 +57,7 @@ for server, tool, arguments in json.loads(sys.argv[1]):
         result = sessions[server].call_tool(tool, arguments)
         out = {"decision": "allow", "is_error": bool(result.get("isError"))}
     except MCPError as e:
-        out = {"decision": "block" if "blocked" in str(e) else "error", "message": str(e)}
+        out = {"decision": {-32001: "block", -32002: "withheld"}.get(e.error.get("code"), "error"), "message": str(e)}
     print(json.dumps({"server": server, "tool": tool} | out), flush=True)
 for s in sessions.values():
     s.close()
@@ -95,14 +101,17 @@ def main() -> int:
         sh(*mcl, "down", str(TESTBED), check=False)
 
     live = [json.loads(line) for line in r.stdout.splitlines() if line.startswith("{")]
-    for i, (call, want) in enumerate(zip(live, EXPECTED), 1):
+    for i, call in enumerate(live, 1):
         print(f"  c{i} {call['server']}.{call['tool']}: {call['decision']}"
               + (", error result" if call.get("is_error") else "")
               + (f" ({call['message']})" if call.get("message") else ""))
-    expect([c["decision"] for c in live] == EXPECTED, f"live decisions are {EXPECTED}")
+    expect([c["decision"] for c in live] == LIVE, f"what the client got: {LIVE}")
     expect(len(live) > 1 and live[1].get("is_error") is True, "c2 returned an error result")
-    expect("after the result of call c4" in (live[-1].get("message") or "") if live else False,
-           "the block of c5 names the earlier result it rests on (c4)")
+    expect(len(live) == 7 and live[3]["message"] == "blocked: guard error"
+           and live[4]["message"] == "result withheld: guard error",
+           "c4 and c5: the client is told of a guard error, not what the guard raised")
+    expect("after the result of call c6" in (live[-1].get("message") or "") if live else False,
+           "the block of c7 names the earlier result it rests on (c6), not c5, whose result the guard failed on")
 
     for name, source in (("manifest.json", out / "manifest.json"), ("policy.json", out / "policy" / "current.json")):
         shutil.copy(source, run / name)  # what `mcl run` puts into a run folder
@@ -115,19 +124,29 @@ def main() -> int:
     expect(plugin.get("package") == "mcl-dummy-guard" and plugin.get("tree_sha256")
            == (manifest.get("guard_plugin") or {}).get("tree_sha256"),
            f"start event and manifest: plugin package and the same tree hash ({str(plugin.get('tree_sha256'))[:12]})")
-    expect([e.get("call_id") for e in calls] == ["c1", "c2", "c3", "c4", "c5"]
-           and [e.get("label") for e in calls] == ["public", "private", "public", "private", "public"],
-           "tool-call lines: call IDs c1 to c5 and server labels")
+    expect([e.get("call_id") for e in calls] == [f"c{i}" for i in range(1, 8)]
+           and [e.get("label") for e in calls] == ["public", "private", "public", "public", "private", "private", "public"]
+           and [e.get("decision") for e in calls] == LOGGED,
+           "tool-call lines: call IDs c1 to c7, server labels, decisions")
     expect([(e.get("seq_call"), e.get("seq_result")) for e in calls]
-           == [(1, 2), (3, None), (4, 5), (6, 7), (8, None)],
-           "tool-call lines: step numbers; none for the error result (c2) and the blocked call (c5)")
+           == [(1, 2), (3, None), (4, 5), (6, None), (7, 8), (9, 10), (11, None)],
+           "tool-call lines: step numbers; none for the error result (c2) and the blocked calls (c4, c7)")
+    expect([(e.get("guard_error"), e.get("result_withheld")) for e in calls] == [
+        (None, False), (None, False), (None, False),
+        ("on_call: RuntimeError: dummy guard told to fail on a call of recent", False),
+        ("on_result: RuntimeError: dummy guard told to fail on the result of describe_table", True),
+        (None, False), (None, False)] and calls[3]["reason"] == "guard error" and calls[4]["result_text"],
+           "tool-call lines: what the guard raised, in its own field; the withheld result is kept in the log")
 
     r = sh(*mcl, "replay", str(run), "--out", str(work / "replay.jsonl"), check=False)
     print(r.stdout.strip())
     decisions = [json.loads(line) for line in (work / "replay.jsonl").read_text().splitlines()][1:]
-    expect(r.returncode == 0 and [d["replayed"] for d in decisions] == EXPECTED,
-           "mcl replay: the same five decisions from the log, the block of c5 included")
+    expect(r.returncode == 0 and [d["replayed"] for d in decisions] == LOGGED,
+           "mcl replay: the same seven decisions from the log, the block of c7 included")
     expect(decisions[-1]["reason"] == calls[-1]["reason"], "mcl replay: the same reason for the block")
+    expect([(d["replayed_error"], d["replayed_withheld"]) for d in decisions]
+           == [(e["guard_error"], e["result_withheld"]) for e in calls],
+           "mcl replay: the guard raises again in the same two calls, with the same text")
     print("live check passed" if not problems else f"live check FAILED: {len(problems)} problem(s)")
     return 1 if problems else 0
 

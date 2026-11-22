@@ -1,9 +1,8 @@
 # A guard plugin for the lab's own tests, and a template for a real one.
-# The gateway image installs a plugin offline (no package index), so the build backend must be
-# one that uv carries itself: uv_build, in a version range that holds the uv of the image.
+# `mcl build` builds the plugin into a wheel on the host, so any build backend will do.
 [build-system]
-requires = ["uv_build>=0.9.5,<0.10"]
-build-backend = "uv_build"
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
 
 [project]
 name = "mcl-dummy-guard"
@@ -14,3 +13,6 @@ dependencies = []
 
 [project.entry-points."mcp_cybernet_lab.guards"]
 dummy = "mcl_dummy_guard:DummyGuard"
+
+[tool.setuptools.packages.find]
+where = ["src"]

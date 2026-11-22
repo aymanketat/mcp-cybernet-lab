@@ -1,0 +1,4 @@
+# Policy of the plugin check: makes the dummy guard raise in each of its two hooks, once each.
+version: 1
+raise_in_on_call: [recent]            # paste.recent: the guard raises before the call is sent
+raise_in_on_result: [describe_table]  # hr.describe_table: the guard raises on the result

@@ -56,8 +56,9 @@ class Proxy(BaseHTTPRequestHandler):
         """Called with a POST body. Return a JSON body to answer directly (blocked), or None."""
         return None
 
-    def after(self, body: bytes, status: int, content_type: str, resp: bytes) -> None:
-        """Called with a POST and its buffered response."""
+    def after(self, body: bytes, status: int, content_type: str, resp: bytes) -> bytes | None:
+        """Called with a POST and its buffered response. Return a JSON body to send in place of
+        the response (it is withheld from the client), or None to pass the response on."""
 
     # --- plumbing ----------------------------------------------------------------------
     def _send(self, status: int, body: bytes, content_type="application/json", headers=()):
@@ -99,7 +100,9 @@ class Proxy(BaseHTTPRequestHandler):
         if method == "POST":
             resp = r.read()
             conn.close()
-            self.after(body, r.status, ctype, resp)
+            answer = self.after(body, r.status, ctype, resp)
+            if answer is not None:
+                return self._send(200, answer)
             return self._send(r.status, resp, ctype, out_headers)
         # GET stream or DELETE: pass through as it arrives.
         self.send_response(r.status)

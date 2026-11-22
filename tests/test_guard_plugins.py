@@ -156,8 +156,8 @@ def test_a_session_numbers_the_steps_and_sets_the_call_in_hand():
     a = s.call("hr", "x", {})
     b = s.call("paste", "x", {})
     assert (a["call_id"], a["seq_call"], b["call_id"], b["seq_call"]) == ("c1", 1, "c2", 2)
-    assert s.result("c2", "paste", "x", {}, "done", False) == 3
-    assert s.result("c1", "hr", "x", {}, "rows", False) == 4
+    assert s.result("c2", "paste", "x", {}, "done", False) == {"seq_result": 3, "error": None}
+    assert s.result("c1", "hr", "x", {}, "rows", False) == {"seq_result": 4, "error": None}
     assert g.steps == [("call", "c1", "hr"), ("call", "c2", "paste"), ("result", "c2", "paste"), ("result", "c1", "hr")]
 
 
@@ -166,7 +166,7 @@ def test_an_error_result_is_never_put_to_a_guard(text, is_error):
     g = Recorder({})
     s = guards.Session(g)
     call = s.call("hr", "x", {})
-    assert s.result(call["call_id"], "hr", "x", {}, text, is_error) is None
+    assert s.result(call["call_id"], "hr", "x", {}, text, is_error) == {"seq_result": None, "error": None}
     assert g.steps == [("call", "c1", "hr")] and s.seq == 1
 
 
@@ -232,7 +232,8 @@ def test_replay_of_a_built_in_guard_on_an_old_log_is_what_it_was():
     out = guards.replay(guards.make_guard("taint", policy), log)
     assert [(e["replay_allowed"], e["replay_reason"]) for e in out] == [
         (True, ""), (False, "tainted value from id@hr sent to sink paste")]
-    assert all(set(e) - set(src) == {"replay_allowed", "replay_reason", "replay_call_id"} for e, src in zip(out, log))
+    assert all(set(e) - set(src) == {"replay_allowed", "replay_reason", "replay_call_id", "replay_error",
+                                     "replay_withheld"} for e, src in zip(out, log))
 
 
 # --- the gateway ---------------------------------------------------------------------------------
@@ -253,11 +254,11 @@ def gateway(dummy, monkeypatch, tmp_path):
     module.State.log, module.State.task, module.State.pending = open(log, "w", encoding="utf-8"), "t-r0", {}
     module.write(type="start", guard="dummy", policy_version=None, labels=module.labels(), plugins=module.State.plugins)
 
-    def call(server, request_id, answer=None):
-        """One tools/call through the gateway's two hooks; answer None = stop after the call hook."""
+    def call(server, request_id, tool="x"):
+        """One tools/call through the gateway's two hooks: (the answer if blocked, the result hook)."""
         handler = types.SimpleNamespace(server_id=server, headers={"Mcp-Session-Id": "s"})
         body = json.dumps({"jsonrpc": "2.0", "id": request_id, "method": "tools/call",
-                           "params": {"name": "x", "arguments": {}}}).encode()
+                           "params": {"name": tool, "arguments": {}}}).encode()
         blocked = module.Gateway.before(handler, body)
         return blocked, lambda result: module.Gateway.after(
             handler, body, 200, "application/json", json.dumps({"jsonrpc": "2.0", "id": request_id, **result}).encode())
@@ -266,7 +267,7 @@ def gateway(dummy, monkeypatch, tmp_path):
         module.State.log.flush()
         return [json.loads(l) for l in log.read_text(encoding="utf-8").splitlines()]
 
-    yield types.SimpleNamespace(call=call, read=read)
+    yield types.SimpleNamespace(call=call, read=read, module=module)
     module.State.log.close()
     module.State.log = None
 
@@ -340,7 +341,30 @@ def test_without_plugins_the_gateway_image_is_built_as_before(tmp_path):
         assert manifest["guard_plugin"] is None and manifest["plugins"] == [] and manifest["gateway"]["plugins"] == []
 
 
-def test_a_plugin_is_copied_installed_offline_and_checked_in_the_image(tmp_path, dummy):
+def make_wheel(source: Path, dest: Path, package="mcl-dummy-guard", version="0.1.0",
+               entry_points: dict | None = None) -> Path:
+    """A wheel of a src-layout plugin folder, written by hand: what `pip wheel` makes, without pip
+    (which would fetch the build backend). The real build is in test_a_wheel_is_built_... below."""
+    import zipfile
+    dest.mkdir(parents=True, exist_ok=True)
+    stem = f"{package.replace('-', '_')}-{version}"
+    eps = entry_points if entry_points is not None else {"dummy": "mcl_dummy_guard:DummyGuard"}
+    wheel = dest / f"{stem}-py3-none-any.whl"
+    with zipfile.ZipFile(wheel, "w") as z:
+        for f in sorted((source / "src").rglob("*.py")):
+            z.write(f, f.relative_to(source / "src").as_posix())
+        z.writestr(f"{stem}.dist-info/METADATA", f"Metadata-Version: 2.1\nName: {package}\nVersion: {version}\n")
+        z.writestr(f"{stem}.dist-info/entry_points.txt",
+                   "[mcp_cybernet_lab.guards]\n" + "".join(f"{k} = {v}\n" for k, v in eps.items()))
+    return wheel
+
+
+@pytest.fixture
+def wheels(monkeypatch):
+    monkeypatch.setattr(compose, "build_wheel", make_wheel)
+
+
+def test_a_plugin_goes_into_the_image_as_a_wheel_installed_offline_and_checked(tmp_path, dummy, wheels):
     out = compose.build(load_testbed(TESTBED), tmp_path / "b", tmp_path / "runs")
     sha = guards.tree_sha256(PLUGIN / "src/mcl_dummy_guard")
     lines = (out / "dockerfiles/gateway.Dockerfile").read_text().splitlines()
@@ -348,16 +372,18 @@ def test_a_plugin_is_copied_installed_offline_and_checked_in_the_image(tmp_path,
         "COPY mcp_cybernet_lab /opt/mcl/mcp_cybernet_lab",
         "COPY plugins /opt/mcl-plugins",
         "RUN uv pip install --no-deps --no-index --python /usr/bin/python3 --target /opt/mcl/site "
-        "/opt/mcl-plugins/dummy-guard",
+        "/opt/mcl-plugins/mcl_dummy_guard-0.1.0-py3-none-any.whl",
         "ENV PYTHONPATH=/opt/mcl/site",
         f"RUN python3 /opt/mcl/guards.py check dummy {sha}"]
-    assert (out / "context/plugins/dummy-guard/src/mcl_dummy_guard/__init__.py").is_file()
-    assert not list((out / "context/plugins").rglob("__pycache__"))
+    assert [p.name for p in (out / "context/plugins").iterdir()] == ["mcl_dummy_guard-0.1.0-py3-none-any.whl"]
     assert (out / "context/mcp_cybernet_lab/guards.py").read_text() == compose.GUARDS_SHIM
     manifest = json.loads((out / "manifest.json").read_text())
     assert manifest["guard_plugin"] == {"guard": "dummy", "package": "mcl-dummy-guard", "version": "0.1.0",
                                         "tree_sha256": sha}
-    assert [p["name"] for p in manifest["plugins"]] == ["dummy-guard"] and manifest["plugins"][0]["source_sha256"]
+    assert manifest["plugins"] == [{"name": "dummy-guard", "path": str(PLUGIN),
+                                    "wheel": "mcl_dummy_guard-0.1.0-py3-none-any.whl", "package": "mcl-dummy-guard",
+                                    "version": "0.1.0", "guards": [{"guard": "dummy", "tree_sha256": sha}]}]
+    assert json.loads((out / "policy/current.json").read_text())["raise_in_on_call"] == ["recent"]
     built = yaml.safe_load((out / "docker-compose.yml").read_text())["services"]["gateway"]
     assert set(built) == {"build", "image", "command", "environment", "volumes", "networks", "labels"}
     assert built["labels"]["mcl.guard"] == "dummy"
@@ -431,7 +457,7 @@ def test_mcl_replay_with_another_guard_or_policy_reports_the_differences(tmp_pat
     assert main(["replay", str(run), "--guard", "dummy"]) == 0  # differences from another guard are a finding
     text = capsys.readouterr().out
     assert "same decision as logged: 1 of 2" in text
-    assert "t-r0 c2 paste.x: logged allow, replayed block (call c2 to public server paste after" in text
+    assert "t-r0 c2 paste.x: logged allow; replayed block (call c2 to public server paste after" in text
     policy = tmp_path / "p.yaml"
     policy.write_text("version: 7\nsinks: []\n")
     assert main(["replay", str(run), "--policy", str(policy)]) == 0
@@ -450,3 +476,223 @@ def test_mcl_replay_exits_1_when_a_run_is_not_reproduced_and_refuses_to_write_in
 def test_mcl_replay_needs_a_guarded_run(tmp_path, capsys):
     run = run_folder(tmp_path, None, guard="none")
     assert main(["replay", str(run)]) == 2 and "without a gateway" in capsys.readouterr().err
+
+
+# --- the tree hash is one thing: wheel, image, host ----------------------------------------------
+def test_the_tree_hash_of_a_wheel_is_the_tree_hash_of_the_installed_package(tmp_path):
+    wheel = make_wheel(PLUGIN, tmp_path)
+    info = compose.wheel_guards(wheel)
+    assert info == {"package": "mcl-dummy-guard", "version": "0.1.0", "guards": [
+        {"guard": "dummy", "tree_sha256": guards.tree_sha256(PLUGIN / "src/mcl_dummy_guard")}]}
+
+
+def test_the_tree_hash_orders_files_by_name_as_text(tmp_path):
+    """'a-b.py' and 'a/b.py' sort differently as paths and as text; a folder and a wheel must agree."""
+    pkg = tmp_path / "pkg"
+    (pkg / "a").mkdir(parents=True)
+    for name in ("__init__.py", "a-b.py", "a/b.py"):
+        (pkg / name).write_text(name)
+    files = {name: name.encode() for name in ("a/b.py", "__init__.py", "a-b.py")}
+    assert guards.tree_sha256(pkg) == guards.files_sha256(files)
+
+
+def test_a_wheel_is_built_from_a_plugin_folder_with_its_own_backend(tmp_path):
+    """The real build (pip wheel). pip fetches the build backend, so this needs the package index."""
+    import socket
+    try:
+        socket.create_connection(("pypi.org", 443), timeout=3).close()
+    except OSError:
+        pytest.skip("no connection to the package index")
+    before = sorted(p.name for p in PLUGIN.rglob("*"))
+    wheel = compose.build_wheel(PLUGIN, tmp_path / "plugins")
+    assert wheel.name == "mcl_dummy_guard-0.1.0-py3-none-any.whl"
+    assert compose.wheel_guards(wheel)["guards"] == [
+        {"guard": "dummy", "tree_sha256": guards.tree_sha256(PLUGIN / "src/mcl_dummy_guard")}]
+    assert sorted(p.name for p in PLUGIN.rglob("*")) == before  # the build leaves nothing in the folder
+
+
+def test_a_folder_that_cannot_be_built_is_refused_with_the_builders_words(tmp_path):
+    bad = tmp_path / "bad"
+    bad.mkdir()
+    (bad / "pyproject.toml").write_text("this is not toml [")
+    with pytest.raises(TestbedError, match="could not be built into a wheel"):
+        compose.build_wheel(bad, tmp_path / "plugins")
+
+
+def test_the_code_on_the_host_must_be_the_code_of_the_wheel(tmp_path, dummy, monkeypatch):
+    other = tmp_path / "dummy-guard"
+    (other / "src/mcl_dummy_guard").mkdir(parents=True)
+    (other / "src/mcl_dummy_guard/__init__.py").write_text("# other code\n")
+    monkeypatch.setattr(compose, "build_wheel", lambda source, dest: make_wheel(other, dest))
+    with pytest.raises(TestbedError, match="the code installed on this machine .* is not the code in gateway.plugins"):
+        compose.build(load_testbed(TESTBED), tmp_path / "b", tmp_path / "runs")
+
+
+def test_the_configured_guard_must_be_in_one_of_the_wheels(tmp_path, dummy, monkeypatch):
+    monkeypatch.setattr(compose, "build_wheel",
+                        lambda source, dest: make_wheel(source, dest, entry_points={"other": "mcl_dummy_guard:DummyGuard"}))
+    with pytest.raises(TestbedError, match=r"'dummy' is not registered by any folder in gateway.plugins "
+                                           r"\(they register: \['other'\]\)"):
+        compose.build(load_testbed(TESTBED), tmp_path / "b", tmp_path / "runs")
+
+
+# --- name clashes --------------------------------------------------------------------------------
+def test_name_clashes_name_both_sides():
+    said = guards.name_clashes([("dummy", "pkg-a"), ("dummy", "pkg-b"), ("taint", "pkg-a"), ("none", "pkg-c"),
+                                ("passthrough", "pkg-c"), ("fine", "pkg-a"), ("fine", "pkg-a")], "here")
+    assert said == [
+        "guard name 'dummy' is registered by 2 plugins: pkg-a, pkg-b (here)",
+        "guard name 'none' means no gateway and is also registered by plugin pkg-c (here)",
+        "guard name 'passthrough' is a built-in guard and is also registered by plugin pkg-c (here)",
+        "guard name 'taint' is a built-in guard and is also registered by plugin pkg-a (here)"]
+
+
+@pytest.mark.parametrize("installed, says", [
+    ([("dummy", "pkg-a"), ("dummy", "pkg-b")], "guard name 'dummy' is registered by 2 plugins: pkg-a, pkg-b"),
+    ([("taint", "pkg-a")], "guard name 'taint' is a built-in guard and is also registered by plugin pkg-a"),
+    ([("passthrough", "pkg-a")], "guard name 'passthrough' is a built-in guard and is also registered by plugin pkg-a"),
+    ([("none", "pkg-a")], "guard name 'none' means no gateway and is also registered by plugin pkg-a"),
+], ids=["two-plugins", "taint", "passthrough", "none"])
+def test_the_build_refuses_a_clash_among_installed_plugins(tmp_path, monkeypatch, installed, says):
+    eps = [FakeEntryPoint(name, lambda: Recorder, package=package) for name, package in installed]
+    monkeypatch.setattr(guards, "installed_entry_points", lambda: eps)
+    for guard in ("taint", "passthrough"):  # also when the testbed itself uses a built-in guard
+        with pytest.raises(TestbedError, match=says + r" \(installed on this machine\)"):
+            check_buildable(load_testbed(tb(tmp_path, guard=guard)).testbed)
+    check_buildable(load_testbed(tb(tmp_path)).testbed)  # no gateway: no guard name is used
+
+
+@pytest.mark.parametrize("second, says", [
+    ({"dummy": "mcl_dummy_guard:DummyGuard"},
+     "guard name 'dummy' is registered by 2 plugins: mcl-dummy-guard, second-plugin (in gateway.plugins)"),
+    ({"taint": "mcl_dummy_guard:DummyGuard"},
+     "guard name 'taint' is a built-in guard and is also registered by plugin second-plugin (in gateway.plugins)"),
+], ids=["two-plugins", "built-in"])
+def test_the_build_refuses_a_clash_among_the_plugins_of_a_testbed(tmp_path, dummy, monkeypatch, second, says):
+    (tmp_path / "second").mkdir()
+    (tmp_path / "second/pyproject.toml").write_text("")
+    f = tmp_path / "t.yaml"
+    data = yaml.safe_load(TESTBED.read_text())
+    data["gateway"] = {"guard": "dummy", "plugins": [str(PLUGIN), "second"]}
+    for s in data["servers"]:
+        s["path"] = str((TESTBED.parent / s["path"]).resolve())
+    f.write_text(yaml.safe_dump(data))
+
+    def build_wheel(source, dest):
+        if source.name == "second":
+            return make_wheel(PLUGIN, dest, package="second-plugin", entry_points=second)
+        return make_wheel(source, dest)
+
+    monkeypatch.setattr(compose, "build_wheel", build_wheel)
+    with pytest.raises(TestbedError) as e:
+        compose.build(load_testbed(f), tmp_path / "b", tmp_path / "runs")
+    assert says in str(e.value)
+
+
+# --- a guard that raises -------------------------------------------------------------------------
+class Faulty(guards.Guard):
+    """Raises where its policy says: on a call of a tool, or on the result of one."""
+    name = "faulty"
+
+    def reset(self):
+        self.seen = []
+
+    def on_call(self, server, tool, arguments):
+        if tool == self.policy.get("call"):
+            raise ValueError("cannot read the call")
+        return (False, "private data seen") if server == "paste" and self.seen else (True, "")
+
+    def on_result(self, server, tool, arguments, text):
+        if tool == self.policy.get("result"):
+            raise KeyError("span")
+        self.seen.append(server)
+
+
+def test_a_guard_that_raises_in_on_call_blocks_the_call():
+    s = guards.Session(Faulty({"call": "x"}))
+    step = s.call("hr", "x", {})
+    assert step == {"call_id": "c1", "seq_call": 1, "allowed": False, "reason": "guard error",
+                    "error": "on_call: ValueError: cannot read the call"}
+    assert s.call("hr", "y", {})["error"] is None  # the guard goes on
+
+
+def test_a_guard_that_raises_in_on_result_has_its_result_withheld():
+    s = guards.Session(Faulty({"result": "x"}))
+    step = s.call("hr", "x", {})
+    assert step["allowed"] and step["error"] is None
+    assert s.result("c1", "hr", "x", {}, "rows", False) == {"seq_result": 2, "error": "on_result: KeyError: 'span'"}
+    assert s.guard.seen == []  # what it holds after raising is the guard's affair: here, nothing was learned
+
+
+def faulty_gateway(gateway_module, policy):
+    gateway_module.State.guard = Faulty(policy)
+    gateway_module.State.guard.context = guards.Context(LABELS)
+    gateway_module.State.session = guards.Session(gateway_module.State.guard)
+
+
+def test_the_gateway_fails_closed_in_both_hooks_and_logs_what_was_raised(gateway):
+    faulty_gateway(gateway.module, {"call": "x"})
+    refused, _ = gateway.call("hr", 1)
+    answer = json.loads(refused)["error"]
+    assert answer == {"code": -32001, "message": "blocked: guard error", "data": {"blocked": True}}
+
+    faulty_gateway(gateway.module, {"result": "x"})
+    blocked, returns = gateway.call("hr", 2)
+    assert blocked is None
+    answer = json.loads(returns(ok("the rows of the table")))["error"]
+    assert answer == {"code": -32002, "message": "result withheld: guard error", "data": {"withheld": True}}
+    _, returns = gateway.call("hr", 3, tool="y")
+    assert returns(ok()) is None  # an ordinary result is passed on as it came
+
+    _, first, second, third = gateway.read()
+    assert (first["decision"], first["reason"], first["guard_error"], first["result_withheld"]) == (
+        "block", "guard error", "on_call: ValueError: cannot read the call", False)
+    assert (second["decision"], second["reason"], second["guard_error"], second["result_withheld"]) == (
+        "allow", "", "on_result: KeyError: 'span'", True)
+    assert second["result_text"] == "the rows of the table" and second["seq_result"] == 2  # kept in the log
+    assert (third["guard_error"], third["result_withheld"]) == (None, False)
+    assert "cannot read" not in refused.decode()  # what was raised stays in the log
+
+
+def test_replay_reproduces_a_guard_that_raised():
+    log = [line("hr", "c1", 1, None, text=None, decision="block") | {"tool": "x"},
+           line("hr", "c2", 2, 3) | {"tool": "y"}]
+    out = guards.replay(Faulty({"call": "x", "result": "y"}), log, LABELS)
+    assert [(e["replay_allowed"], e["replay_reason"], e["replay_error"], e["replay_withheld"]) for e in out] == [
+        (False, "guard error", "on_call: ValueError: cannot read the call", False),
+        (True, "", "on_result: KeyError: 'span'", True)]
+
+
+def test_mcl_replay_and_check_coverage_tell_a_crash_from_a_decision(tmp_path, monkeypatch, capsys):
+    monkeypatch.setitem(guards.GUARDS, "faulty", Faulty)
+    run = run_folder(tmp_path, None, guard="faulty")
+    (run / "policy.json").write_text(json.dumps({"version": 0, "call": "x", "result": "y"}))
+    log = [line("hr", "c1", 1, None, text=None, decision="block") | {
+               "tool": "x", "reason": "guard error", "guard_error": "on_call: ValueError: cannot read the call",
+               "result_withheld": False},
+           line("hr", "c2", 2, 3) | {"tool": "y", "guard_error": "on_result: KeyError: 'span'", "result_withheld": True},
+           line("hr", "c3", 4, 5) | {"tool": "z", "guard_error": None, "result_withheld": False}]
+    (run / "t-r0/gateway.jsonl").write_text("".join(json.dumps(e) + "\n" for e in log))
+    assert main(["replay", str(run)]) == 0
+    text = capsys.readouterr().out
+    assert "logged    allow 2, block 1; the guard raised in 2 calls (1 results withheld)" in text
+    assert "replayed  allow 2, block 1; the guard raised in 2 calls (1 results withheld)" in text
+    assert "same decision as logged: 3 of 3" in text
+
+    (run / "policy.json").write_text(json.dumps({"version": 0}))  # the same guard, now not raising
+    assert main(["replay", str(run)]) == 1
+    text = capsys.readouterr().out
+    assert "same decision as logged: 1 of 3" in text
+    assert ("t-r0 c1 hr.x: logged block, guard raised on_call: ValueError: cannot read the call; "
+            "replayed allow") in text
+    assert "t-r0 c2 hr.y: logged allow, result withheld, guard raised on_result: KeyError: 'span'; replayed allow" in text
+
+    from mcp_cybernet_lab.report import gateway_coverage
+    trace = [{"type": "tool_call", "server": e["server"], "tool": e["tool"], "arguments": {},
+              "blocked": e["decision"] == "block"} for e in log]
+    (run / "t-r0/trace.jsonl").write_text("".join(json.dumps(e) + "\n" for e in trace))
+    (run / "results.jsonl").write_text(json.dumps({"task": "t", "repeat": 0, "run": "t-r0"}) + "\n")
+    covered, text = gateway_coverage(run)
+    assert covered  # a withheld result is not a block: the trace and the log agree
+    assert ("calls in which the guard raised (failed closed): 2   blocked 1, "
+            "result withheld after the tool ran 1") in text

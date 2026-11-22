@@ -10,7 +10,7 @@ from pathlib import Path
 import yaml
 from pydantic import ValidationError
 
-from .guards import GUARDS, UnknownGuard
+from .guards import GUARDS, UnknownGuard, installed_clashes
 from .guards import check as check_guard
 from .schema import Testbed
 
@@ -87,6 +87,11 @@ def check_buildable(tb: Testbed) -> None:
         if d.auth == "oauth":
             todo.append(f"domain '{d.id}': auth 'oauth' (use 'token'; OAuth 2.1 is not implemented)")
     name = tb.gateway.guard
+    if name != "none":
+        clashes = installed_clashes()
+        if clashes:
+            raise TestbedError("guard names must mean one thing; uninstall or rename a plugin:\n"
+                               + "\n".join(f"  - {c}" for c in clashes))
     if name != "none" and name not in GUARDS:
         try:
             check_guard(name)

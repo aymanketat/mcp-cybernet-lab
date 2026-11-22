@@ -35,4 +35,5 @@ clients:
 
 gateway:
   guard: dummy
+  policy: dummy-policy.yaml
   plugins: [dummy-guard]

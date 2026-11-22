@@ -9,6 +9,12 @@ Clients reach server <id> at http://gateway:8080/<id>/mcp. The gateway forwards 
 http://<id>:8080/mcp, keeping the client's headers (so per-domain tokens still apply).
 A blocked tool call is answered with a JSON-RPC error, code -32001, and never reaches the server.
 
+A guard that raises fails closed, and the line says so in `guard_error` (null otherwise). Raised
+on the call: the call is blocked, with the reason "guard error". Raised on the result: the tool has
+run, the decision stays "allow", the result is kept in the log and withheld from the client
+(`result_withheld` true), which gets a JSON-RPC error, code -32002. That code is not the code of a
+block: the call did reach its server, and the agent's trace must not record it as blocked.
+
 Control runs on 127.0.0.1:9090, inside the container only: agents and servers cannot reach it.
 Configuration: MCL_GATEWAY = {"guard": ..., "servers": {id: {"label", "domain"}}},
 policy file /policy/current.json.
@@ -39,6 +45,7 @@ from mcpclient import result_text  # noqa: E402
 CONFIG = json.loads(os.environ.get("MCL_GATEWAY", '{"guard": "passthrough", "servers": {}}'))
 POLICY_FILE = Path(os.environ.get("MCL_POLICY_FILE", "/policy/current.json"))
 BLOCKED = -32001
+WITHHELD = -32002
 
 
 class State:
@@ -100,16 +107,18 @@ class Gateway(Proxy):
         reason = step["reason"]
         write(type="tool_call", server=self.server_id, tool=tool, arguments=args,
               decision="block", reason=reason, result_text=None, call_id=step["call_id"],
-              label=CONFIG["servers"][self.server_id].get("label"), seq_call=step["seq_call"], seq_result=None)
+              label=CONFIG["servers"][self.server_id].get("label"), seq_call=step["seq_call"], seq_result=None,
+              guard_error=step["error"], result_withheld=False)
+        # What the guard raised goes to the log only: the text of an exception may hold what it was reading.
         return jsonrpc_error(msg.get("id"), BLOCKED, f"blocked: {reason}", {"blocked": True})
 
     def after(self, body, status, ctype, resp):
         try:
             msg = json.loads(body)
         except json.JSONDecodeError:
-            return
+            return None
         if not isinstance(msg, dict) or msg.get("method") != "tools/call":
-            return
+            return None
         key = (self.headers.get("Mcp-Session-Id"), msg.get("id"))
         with State.lock:
             # No entry: a new task started while this call was at its server. Its guard is gone.
@@ -121,12 +130,16 @@ class Gateway(Proxy):
                         text, is_error = result_text(m["result"]), bool(m["result"].get("isError"))
                     elif "error" in m:
                         text, is_error = f"error: {m['error'].get('message')}", True
-            seq_result = State.session.result(step["call_id"], self.server_id, tool, args, text, is_error) \
-                if step else None
+            seen = State.session.result(step["call_id"], self.server_id, tool, args, text, is_error) \
+                if step else {"seq_result": None, "error": None}
         write(type="tool_call", server=self.server_id, tool=tool, arguments=args, decision="allow",
               reason="", result_text=text, is_error=is_error, http_status=status,
               call_id=step and step["call_id"], label=CONFIG["servers"][self.server_id].get("label"),
-              seq_call=step and step["seq_call"], seq_result=seq_result)
+              seq_call=step and step["seq_call"], seq_result=seen["seq_result"],
+              guard_error=seen["error"], result_withheld=bool(seen["error"]))
+        if seen["error"]:
+            return jsonrpc_error(msg.get("id"), WITHHELD, "result withheld: guard error", {"withheld": True})
+        return None
 
 
 class Control(BaseHTTPRequestHandler):

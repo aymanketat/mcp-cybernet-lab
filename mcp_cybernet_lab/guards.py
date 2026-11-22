@@ -142,13 +142,43 @@ class UnknownGuard(KeyError):
         return str(self.args[0])
 
 
-def plugin_entry_points() -> dict:
-    """name -> entry point, for every guard an installed plugin registers. Built-in names are not
-    listed: a plugin cannot replace a built-in guard."""
+RESERVED = ("none",)  # in a testbed file, guard none means no gateway
+
+
+def installed_entry_points() -> list:
+    """Every entry point of the group that an installed package declares, clashes included."""
     from importlib.metadata import entry_points
     eps = entry_points()
-    group = eps.select(group=ENTRY_POINTS) if hasattr(eps, "select") else eps.get(ENTRY_POINTS, [])
-    return {ep.name: ep for ep in group if ep.name not in GUARDS}
+    return list(eps.select(group=ENTRY_POINTS) if hasattr(eps, "select") else eps.get(ENTRY_POINTS, []))
+
+
+def plugin_entry_points() -> dict:
+    """name -> entry point, for every guard an installed plugin registers. Built-in names are not
+    listed: a plugin cannot replace a built-in guard (and `mcl build` refuses one that tries)."""
+    return {ep.name: ep for ep in installed_entry_points() if ep.name not in GUARDS}
+
+
+def name_clashes(registered: list[tuple[str, str]], where: str) -> list[str]:
+    """Guard names that do not mean one thing. registered: (guard name, package) pairs, e.g. of the
+    plugins installed on this machine. A sentence per clash, naming both sides."""
+    by_name: dict[str, set] = {}
+    for name, package in registered:
+        by_name.setdefault(name, set()).add(package)
+    out = []
+    for name, packages in sorted(by_name.items()):
+        listed = ", ".join(sorted(packages))
+        if name in GUARDS:
+            out.append(f"guard name '{name}' is a built-in guard and is also registered by plugin {listed} ({where})")
+        elif name in RESERVED:
+            out.append(f"guard name '{name}' means no gateway and is also registered by plugin {listed} ({where})")
+        elif len(packages) > 1:
+            out.append(f"guard name '{name}' is registered by {len(packages)} plugins: {listed} ({where})")
+    return out
+
+
+def installed_clashes() -> list[str]:
+    return name_clashes([(ep.name, getattr(getattr(ep, "dist", None), "name", None) or ep.value)
+                         for ep in installed_entry_points()], "installed on this machine")
 
 
 def guard_class(name: str) -> type:
@@ -171,18 +201,29 @@ def code_path(cls: type) -> Path:
 def _code_files(root: Path) -> list[Path]:
     if root.is_file():
         return [root]
-    return sorted(f for f in root.rglob("*")
-                  if f.is_file() and "__pycache__" not in f.parts and f.suffix not in (".pyc", ".pyo"))
+    return sorted(f for f in root.rglob("*") if f.is_file() and is_code(f.relative_to(root).as_posix()))
+
+
+def is_code(name: str) -> bool:
+    """Does a file count for the tree hash? Compiled files do not: they differ from machine to machine."""
+    return "__pycache__" not in name.split("/") and not name.endswith((".pyc", ".pyo"))
+
+
+def files_sha256(files: dict[str, bytes]) -> str:
+    """Hash of files given as name -> contents, names relative to the package's own folder with '/'
+    (for a package that is one file: the file's name), in the order of the names as text."""
+    h = hashlib.sha256()
+    for name in sorted(files):
+        h.update(name.encode() + b"\0" + files[name])
+    return h.hexdigest()
 
 
 def tree_sha256(root: Path) -> str:
-    """Hash of the names and contents of a plugin's code, compiled files left out. The same code
-    gives the same hash on the host and in the gateway image, however it was installed."""
-    h = hashlib.sha256()
-    for f in _code_files(root):
-        name = f.name if root.is_file() else f.relative_to(root).as_posix()
-        h.update(name.encode() + b"\0" + f.read_bytes())
-    return h.hexdigest()
+    """Hash of the names and contents of a plugin's code: the files of its top-level package,
+    compiled files left out. The same files give the same hash in the wheel `mcl build` makes, in
+    the gateway image that installs the wheel, and on the host, however the plugin is installed there."""
+    return files_sha256({f.name if root.is_file() else f.relative_to(root).as_posix(): f.read_bytes()
+                         for f in _code_files(root)})
 
 
 def foreign_imports(root: Path) -> list[str]:
@@ -230,6 +271,13 @@ def make_guard(name: str, policy: dict, context: Context | None = None):
     return guard
 
 
+GUARD_ERROR = "guard error"  # the reason of a call that is not allowed because its guard raised
+
+
+def raised(hook: str, e: Exception) -> str:
+    return f"{hook}: {type(e).__name__}: {e}"
+
+
 class Session:
     """The steps of one task, applied to a guard: the same code live (gateway) and offline (replay).
 
@@ -237,6 +285,11 @@ class Session:
     `seq_result` when its result is. A result is put to the guard only if there is one and it is
     not an error; otherwise the step does not happen and has no number. The gateway serves calls
     on threads, so the lines of its log are not always in the order of these steps; the numbers are.
+
+    A guard that raises fails closed. In on_call: the call is not allowed, with the reason
+    GUARD_ERROR. In on_result: the result must be withheld from the agent (the tool has already
+    run on its server). Either way `error` says where and what was raised, apart from the reason,
+    so a crash can be told from a decision. The guard is kept; what it holds after raising is its own affair.
     """
 
     def __init__(self, guard):
@@ -254,17 +307,27 @@ class Session:
         self.seq += 1
         call_id = call_id or f"c{self.calls}"
         self._at(call_id)
-        allowed, reason = self.guard.on_call(server, tool, arguments)
-        return {"call_id": call_id, "seq_call": self.seq, "allowed": bool(allowed), "reason": reason}
+        seq, error = self.seq, None
+        try:
+            allowed, reason = self.guard.on_call(server, tool, arguments)
+        except Exception as e:
+            allowed, reason, error = False, GUARD_ERROR, raised("on_call", e)
+        return {"call_id": call_id, "seq_call": seq, "allowed": bool(allowed), "reason": reason, "error": error}
 
     def result(self, call_id: str, server: str, tool: str, arguments: dict,
-               text: str | None, is_error: bool | None) -> int | None:
+               text: str | None, is_error: bool | None) -> dict:
+        """{"seq_result": the step's number, or None if the result was not put to the guard;
+        "error": None, or what on_result raised: the result is then to be withheld}"""
         if text is None or is_error:
-            return None
+            return {"seq_result": None, "error": None}
         self.seq += 1
         self._at(call_id)
-        self.guard.on_result(server, tool, arguments, text)
-        return self.seq
+        seq, error = self.seq, None
+        try:
+            self.guard.on_result(server, tool, arguments, text)
+        except Exception as e:
+            error = raised("on_result", e)
+        return {"seq_result": seq, "error": error}
 
 
 def replay(guard, events: list[dict], labels: dict[str, str] | None = None) -> list[dict]:
@@ -279,7 +342,8 @@ def replay(guard, events: list[dict], labels: dict[str, str] | None = None) -> l
     has them, and otherwise in line order, each result right after its call. The result of a call
     is put to the guard only if this guard allows the call (a blocked call has no result) and, as
     in the gateway, only if the result is not an error. Returns the tool-call lines in their
-    logged order, each with replay_allowed, replay_reason and replay_call_id.
+    logged order, each with replay_allowed, replay_reason, replay_call_id, and for a guard that
+    raised replay_error (what Session reports) and replay_withheld (it raised in on_result).
     """
     out: list[dict] = []
     logged_labels: dict[str, str] | None = None
@@ -304,12 +368,15 @@ def replay(guard, events: list[dict], labels: dict[str, str] | None = None) -> l
             e = lines[i]
             args = e.get("arguments") or {}
             if not is_result:
-                decided[i] = session.call(e["server"], e["tool"], args, e.get("call_id"))
+                decided[i] = session.call(e["server"], e["tool"], args, e.get("call_id")) | {"withheld": False}
             elif decided[i]["allowed"]:
-                session.result(decided[i]["call_id"], e["server"], e["tool"], args,
-                               e.get("result_text"), e.get("is_error"))
+                after = session.result(decided[i]["call_id"], e["server"], e["tool"], args,
+                                       e.get("result_text"), e.get("is_error"))
+                if after["error"]:
+                    decided[i] |= {"error": after["error"], "withheld": True}
         out.extend({**e, "replay_allowed": decided[i]["allowed"], "replay_reason": decided[i]["reason"],
-                    "replay_call_id": decided[i]["call_id"]} for i, e in enumerate(lines))
+                    "replay_call_id": decided[i]["call_id"], "replay_error": decided[i]["error"],
+                    "replay_withheld": decided[i]["withheld"]} for i, e in enumerate(lines))
 
     lines, task, task_labels = [], None, None
     for e in events:
