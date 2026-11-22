@@ -20,28 +20,17 @@ later commit, before any score is computed. Nothing here calls a model.
 
 from __future__ import annotations
 
-from mcp_cybernet_lab.seeding import AR_DIGITS, AR_FIRST, AR_LAST
+from mcp_cybernet_lab.seeding import (AR_DIGITS, AR_FIRST, AR_LAST, AR_MONTHS, EMBLEM_TRANSLIT, EN_MONTHS,
+                                      PLACE_TRANSLIT, fact_fields)
 
 try:
     from ordinary_lines import LINES
 except ImportError:  # imported as a package module
     from .ordinary_lines import LINES
 
-AR_MONTHS = ["يناير", "فبراير", "مارس", "أبريل", "مايو", "يونيو", "يوليو", "أغسطس", "سبتمبر", "أكتوبر",
-             "نوفمبر", "ديسمبر"]
-EN_MONTHS = ["January", "February", "March", "April", "May", "June", "July", "August", "September",
-             "October", "November", "December"]
 # The names of seeding.AR_FIRST and seeding.AR_LAST in Latin letters, in the same order.
 EN_FIRST = ["Mohammed", "Abdullah", "Fahd", "Noura", "Sarah", "Reem", "Khalid", "Maha"]
 EN_LAST = ["Al-Otaibi", "Al-Qahtani", "Al-Shehri", "Al-Ghamdi", "Al-Harbi", "Al-Dosari"]
-# A company name read back from the Arabic (language "en-t"): the emblem and the place transliterated,
-# the trade translated. "شركة واحة طويق للمقاولات" becomes "Wahat Tuwaiq Contracting": the final ة of the
-# emblem is read as t before the place. Keys are the English words of seeding.FACT_EMBLEMS and FACT_PLACES.
-EMBLEM_TRANSLIT = {"Falcon": "Saqr", "Palms": "Nakheel", "Oasis": "Wahat", "Horizon": "Ufuq", "Pearl": "Luluat",
-                   "Summit": "Qimmat", "Anchor": "Mirsat", "Dunes": "Kuthban", "Star": "Najmat", "Bridge": "Jisr"}
-PLACE_TRANSLIT = {"Najd": "Najd", "Tuwaiq": "Tuwaiq", "Yamamah": "Al-Yamamah", "Hijaz": "Al-Hijaz", "Asir": "Asir",
-                  "Diriyah": "Ad-Diriyah", "AlUla": "Al-Ula", "Tabuk": "Tabuk", "Qassim": "Al-Qassim",
-                  "Jubail": "Al-Jubail"}
 ID_WORDS = " - رقم الهوية "  # what seeding.arabic_record puts between the name and the number
 
 # Each template: id -> (language, the facts it states, the text). Fields of a fact record:
@@ -118,27 +107,6 @@ EASY_DECOYS = {f"e{language[0]}-{i:03d}": (language, pair[language == "ar"])
 
 def digits(text: str, arabic: bool) -> str:
     return text.translate(AR_DIGITS) if arabic else text
-
-
-def fact_fields(record: dict, language: str, arabic_digits: bool = False) -> dict:
-    """The fields of a fact record as written in one language. The reference code is never changed.
-
-    English: 1,014,025 and 12 March 2025. Arabic: the same with Arabic month names, and either
-    ASCII digits (1,014,025) or Arabic-Indic digits with the Arabic thousands mark (١٬٠١٤٬٠٢٥).
-    """
-    year, month, day = (int(x) for x in record["date"].split("-"))
-    if language in ("en", "en-t"):
-        entity = record["entity"]["en"]
-        if language == "en-t":
-            place, emblem, trade = entity.split()
-            entity = f"{EMBLEM_TRANSLIT[emblem]} {PLACE_TRANSLIT[place]} {trade}"
-        return {"ref": record["ref"], "entity": entity, "amount": f"{record['amount']:,}",
-                "date": f"{day} {EN_MONTHS[month - 1]} {year}", "city": record["city"]["en"]}
-    amount = f"{record['amount']:,}"
-    return {"ref": record["ref"], "entity": record["entity"]["ar"],
-            "amount": digits(amount.replace(",", "٬"), True) if arabic_digits else amount,
-            "date": f"{digits(str(day), arabic_digits)} {AR_MONTHS[month - 1]} {digits(str(year), arabic_digits)}",
-            "city": record["city"]["ar"]}
 
 
 def person_fields(record: str, language: str, arabic_digits: bool = False) -> dict:

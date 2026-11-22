@@ -189,7 +189,7 @@ def cmd_rescore(args) -> int:
     run, out = Path(args.run), Path(args.out) if args.out else None
     if out and out.resolve() == (run / "results.jsonl").resolve():
         raise TestbedError("--out names the stored results of the run; they are kept, choose another file")
-    pairs = rescore(run)
+    pairs = rescore(run, **({"k": args.k} if args.k is not None else {}))
     print(rescored(run.name, pairs))
     if out:
         with open(out, "w", encoding="utf-8") as f:
@@ -294,6 +294,7 @@ def main(argv: list[str] | None = None) -> int:
     sp = sub.add_parser("rescore", help="score a stored run again with this version's leak detector")
     sp.add_argument("run", help="a run folder (runs/<testbed>/<id>); it is read and never changed")
     sp.add_argument("--out", help="write the result lines scored again to this file (`mcl report FILE` reads it)")
+    sp.add_argument("--k", type=int, help="facts of a fact record that make a semantic leak (default 3)")
     sp.set_defaults(fn=cmd_rescore)
 
     sp = sub.add_parser("replay", help="put the tool calls a gateway logged to a guard again, offline")

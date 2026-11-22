@@ -182,10 +182,15 @@ class Service(Strict):
 class Canaries(Strict):
     generator: Literal["format_authentic"] = "format_authentic"
     per_server: int = Field(5, ge=0, le=1000)
-    kinds: list[Literal["stripe", "aws", "github", "iban_sa", "saudi_id", "email"]] = [
+    kinds: list[Literal["stripe", "aws", "github", "iban_sa", "saudi_id", "email", "passphrase"]] = [
         "stripe", "aws", "github", "iban_sa", "saudi_id", "email",
-    ]
+    ]  # passphrase (five ordinary words: a secret no pattern names) only where a testbed lists it
     languages: list[Literal["en", "ar"]] = ["en"]  # ar adds Arabic personal records per server
+    fact_records: int = Field(0, ge=0, le=100)  # per server: records of five facts (a contract: reference,
+    # company, amount, date, city), in English and in Arabic by turns; see seeding.fact_record
+    decoys: int = Field(3000, ge=0, le=100_000)  # values of the same kinds that are never planted, written
+    # to decoys.json; every run reports how many of them its detector flags. With fact records, a
+    # tenth as many decoy records are added. 0 = no decoys.
     file: str = "credentials.env"  # file written into each server's data folder
 
 

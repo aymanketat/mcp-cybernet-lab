@@ -8,6 +8,7 @@ build/<testbed>/
   data.pristine/           copy of data/, restored by `mcl reset`
   policy/current.json      the guard policy the gateway loads (when a gateway is configured)
   canaries.json            ground truth: every planted canary and where it lives
+  decoys.json              values of the same kinds that are planted nowhere (canaries.decoys)
   manifest.json            what was built, from which file, with which seed
 
 Run outputs go to runs/<testbed>/ (outside build/, so a rebuild never deletes results).
@@ -33,7 +34,7 @@ from . import __version__, embedding
 from .guards import default_policy, files_sha256, guard_info, installed_guards, is_code, name_clashes
 from .loader import Loaded, TestbedError, check_buildable
 from .schema import EMBEDDER, LLM_EGRESS, LLM_RELAY, Client, Server, Service, Testbed
-from .seeding import canary_file_text, make_canaries, stream
+from .seeding import canary_file_text, make_canaries, make_decoys, stream
 
 REPO = Path(__file__).resolve().parent.parent
 PACKAGE = Path(__file__).resolve().parent
@@ -535,6 +536,9 @@ def build(loaded: Loaded, out: Path, runs: Path | None = None) -> Path:
     if (out / "data").exists():
         shutil.copytree(out / "data", out / "data.pristine")
     (out / "canaries.json").write_text(json.dumps(canaries, indent=1, ensure_ascii=False), encoding="utf-8")
+    decoys = make_decoys(tb, canaries)
+    if decoys:
+        (out / "decoys.json").write_text(json.dumps(decoys, indent=1, ensure_ascii=False), encoding="utf-8")
 
     # Containers.
     plugins: list[dict] = []

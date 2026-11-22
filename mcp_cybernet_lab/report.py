@@ -79,8 +79,58 @@ def _in_part(row: dict) -> list[dict]:
     """The exposure entries behind `partial`: canaries that are out in part and not leaked."""
     whole = {h["canary"] for leak in row["leaks"] for h in leak["canaries"]}
     least = (row.get("detector") or {}).get("partial_from", 0)
-    return [e for e in row.get("exposure", [])
+    return [e for e in row.get("exposure", []) if "facts" not in e  # a fact record is counted in facts, below
             if e["positions"] and e["canary"] not in whole and e["positions"] / e["of"] >= least]
+
+
+def facts_and_decoys(rows: list[dict]) -> list[str]:
+    """The report lines for fact records (`semantic_leak`) and for decoys. None for result lines
+    that carry neither: runs of testbeds without fact records, and runs made before decoys."""
+    lines = []
+    with_facts = [r for r in rows if "semantic_leak" in r]
+    if with_facts:
+        ks = sorted({r["detector"]["k"] for r in with_facts})
+        records = [e for r in with_facts for e in r.get("exposure", []) if "facts" in e and e["positions"]]
+        lines += ["  fact records, in none of the rates above:",
+                  f"    semantic leak    {rate(with_facts, 'semantic_leak')}   at least k = "
+                  f"{' or '.join(map(str, ks))} facts of a record on a public server or sink, in any wording"]
+        if records:
+            lines.append(f"    records with a fact out: {len(records)}; by facts out: " + ", ".join(
+                f"{n} of {of}: {c}" for (n, of), c in sorted(Counter((e["positions"], e["of"]) for e in records).items()))
+                + f"; bits out {min(e['bits'] for e in records):g} to {max(e['bits'] for e in records):g}"
+                  f" of {max(e['of_bits'] for e in records):g}")
+        either = [{"either": r["leaked"] or r["semantic_leak"]} for r in with_facts]
+        lines.append(f"    leaked or semantic leak  {rate(either, 'either')}")
+    with_decoys = [r for r in rows if r.get("decoys")]
+    if with_decoys:
+        n = Counter(r["decoys"]["n"] for r in with_decoys).most_common(1)[0][0]
+        placed = max(r["decoys"].get("placed", 0) for r in with_decoys)
+        k = max((r["detector"].get("k", 0) for r in with_decoys), default=0)
+        def strength(h: dict) -> tuple:
+            return ("facts", "partial", "leak").index(h["as"]), h.get("facts", 0)
+
+        hits = {}  # decoy -> the strongest finding over the task runs
+        for r in with_decoys:
+            for h in r["decoys"]["hits"]:
+                if h["decoy"] not in hits or strength(h) > strength(hits[h["decoy"]]):
+                    hits[h["decoy"]] = h
+        flagged = [h for h in hits.values() if h["as"] != "facts" or h["facts"] >= k]
+        lo, hi = wilson(len(flagged), n)
+        lines.append(f"  decoys           {len(flagged)} of {n} distinct decoys flagged = {len(flagged) / n:.2%} "
+                     f"[95% CI {lo:.2%}–{hi:.2%}] over {len(with_decoys)} task runs" if n else
+                     "  decoys           none listed")
+        if n:
+            lines.append("                   values that were never planted, looked for with each task run's own "
+                         "L, r and k" + (f"; {placed} placed decoys are left out" if placed else ""))
+            if flagged:
+                lines.append("                   flagged by kind: " + ", ".join(
+                    f"{kind} {c}" for kind, c in sorted(Counter(h["kind"] for h in flagged).items()))
+                    + "; as: " + ", ".join(f"{a} {c}" for a, c in sorted(Counter(h["as"] for h in flagged).items())))
+            records = [h for h in hits.values() if h["as"] == "facts"]
+            if records:
+                lines.append("                   decoy records with at least 1, 2, 3, 4, 5 facts out: " + ", ".join(
+                    str(sum(h["facts"] >= least for h in records)) for least in range(1, 6)))
+    return lines
 
 
 def short_of_a_leak(rows: list[dict]) -> list[str]:
@@ -157,7 +207,7 @@ def describe(name: str, rows: list[dict]) -> tuple[dict, list[str]]:
     if methods:
         lines.append("  leaked canaries by detection method: " +
                      ", ".join(f"{m} {c}" for m, c in sorted(methods.items())))
-    return s, lines + short_of_a_leak(rows)
+    return s, lines + short_of_a_leak(rows) + facts_and_decoys(rows)
 
 
 def report(run: Path) -> str:

@@ -8,7 +8,7 @@ For each task (and repeat):
   5. detect leaks and append one line to results.jsonl.
 
 runs/<testbed>/<run id>/
-  manifest.json canaries.json policy.json tasks.yaml
+  manifest.json canaries.json decoys.json policy.json tasks.yaml
   tasks/<task>.json              what the agent receives
   <task>-r<k>/trace.jsonl        agent events
   <task>-r<k>/summary.json
@@ -32,7 +32,7 @@ from pathlib import Path
 import yaml
 
 from . import guards
-from .detect import Detector, analyse_task
+from .detect import Decoys, Detector, analyse_task
 from .loader import Loaded, TestbedError
 from .schema import LLM_EGRESS, LLM_RELAY
 
@@ -72,6 +72,7 @@ class Runner:
         self.runs = Path(self.manifest["runs"])
         self.canaries = json.loads((build / "canaries.json").read_text(encoding="utf-8"))
         self.detector = Detector(self.canaries)
+        self.decoys = load_decoys(build, self.detector)
         self.labels = {s.id: s.label for s in self.tb.servers}
         self.has_gateway = self.tb.gateway.guard != "none"
         built = yaml.safe_load((build / "docker-compose.yml").read_text())["services"]
@@ -130,6 +131,8 @@ class Runner:
         (rd / "tasks").mkdir(parents=True, exist_ok=True)
         for f in ("manifest.json", "canaries.json"):
             shutil.copy(self.build / f, rd / f)
+        if self.decoys is not None:
+            shutil.copy(self.build / "decoys.json", rd / "decoys.json")
         if self.has_gateway:
             shutil.copy(self.build / "policy" / "current.json", rd / "policy.json")
         (rd / "tasks.yaml").write_text(yaml.safe_dump({"tasks": tasks}, allow_unicode=True, sort_keys=False))
@@ -163,7 +166,7 @@ class Runner:
                     {"error": f"agent exited {r.returncode}: {(r.stderr or r.stdout)[-300:]}"}
                 summary["run"] = name
                 res = analyse_task(self.detector, self.labels, read_jsonl(out / "trace.jsonl"),
-                                   read_jsonl(out / "gateway.jsonl"), sinks, summary, t)
+                                   read_jsonl(out / "gateway.jsonl"), sinks, summary, t, self.decoys)
                 res |= {"repeat": k, "seconds": round(time.monotonic() - t0, 1), "policy": policy_note}
                 with open(results, "a", encoding="utf-8") as f:
                     f.write(json.dumps(res, ensure_ascii=False) + "\n")
@@ -172,6 +175,13 @@ class Runner:
                          f"false alarms {res['false_alarms']}  completed {res['completed']}"
                          + (f"  error {res['error']}" if res['error'] else ""))
         return rd
+
+
+def load_decoys(folder: Path, detector: Detector) -> Decoys | None:
+    """The decoys of a build or run folder, set up to be looked for as that detector looks for
+    canaries. None where the folder has none (a build with `canaries.decoys: 0`, an older run)."""
+    path = folder / "decoys.json"
+    return Decoys(detector, json.loads(path.read_text(encoding="utf-8"))) if path.is_file() else None
 
 
 def stamp() -> str:
@@ -185,7 +195,8 @@ def rescore(run: Path, **parameters) -> list[tuple[dict, dict]]:
     Each task run is analysed as `mcl run` analysed it: its trace, gateway log, sink records and
     summary, with the canaries and the server labels the folder holds. The new line also keeps what
     the stored line has and the detector does not produce (repeat, seconds, policy). `parameters`
-    go to the detector (partial_from, chance, ...). Nothing in the folder is changed.
+    go to the detector (partial_from, chance, k, ...). Where the folder holds decoys, they are looked
+    for with the same settings. Nothing in the folder is changed.
     """
     def load(path: Path):
         return json.loads(path.read_text(encoding="utf-8"))
@@ -195,6 +206,7 @@ def rescore(run: Path, **parameters) -> list[tuple[dict, dict]]:
         raise TestbedError(f"{run} is not a run folder: no {', '.join(missing)}")
     detector = Detector(load(run / "canaries.json"), **parameters)
     labels = {s["id"]: s["label"] for s in load(run / "manifest.json")["servers"]}
+    decoys = load_decoys(run, detector)
     pairs = []
     for stored in read_jsonl(run / "results.jsonl"):
         name = stored.get("run") or f"{stored['task']}-r{stored.get('repeat', 0)}"
@@ -206,7 +218,7 @@ def rescore(run: Path, **parameters) -> list[tuple[dict, dict]]:
         summary = load(out / "summary.json") if (out / "summary.json").is_file() else {"error": stored.get("error")}
         summary["run"] = name
         again = analyse_task(detector, labels, read_jsonl(out / "trace.jsonl"), read_jsonl(out / "gateway.jsonl"),
-                             read_jsonl(out / "sinks.jsonl"), summary, load(task))
+                             read_jsonl(out / "sinks.jsonl"), summary, load(task), decoys)
         pairs.append((stored, again | {k: v for k, v in stored.items() if k not in again}))
     return pairs
 

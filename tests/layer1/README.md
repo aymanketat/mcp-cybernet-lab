@@ -71,6 +71,16 @@ R0 and R1 let every rewritten copy through, in every form above, and stop no dec
 wherever it would stop a canary of the same kind. These tests pin the baseline: a change to the
 built-in guard shows here.
 
+## Fact records (`test_layer1_facts.py`)
+
+A fact record is a secret of five facts (a contract: reference, company, amount, date, city). The
+flows in `factforms.py` publish a planted record in other words: the sink wordings of
+`embedpairs.py`, and further ways of writing a date, an amount or a name. The detector must report
+exactly the facts each text states and call it a semantic leak from three facts on. Records and
+values that were never planted come from `seeding.make_decoys`, as a build writes them to
+`decoys.json`, and are never scored. The Arabic the aliases are built from is in
+`aliases-reading-sheet.md` (written by `aliases.py`).
+
 ## Not here
 
 Two forms wait for a decision on what counts as a leak, and are in no test: a number spelled out in
