@@ -142,9 +142,14 @@ class Gateway(Strict):
     guard none = no gateway container (clients talk to servers directly).
     """
 
-    guard: Literal["none", "passthrough", "taint", "mcphunt", "fides"] = "none"
+    guard: str = "none"  # none, a built-in guard (passthrough, taint) or a guard registered by a plugin;
+    # the name is checked at `mcl build`, against the built-in guards and the plugins installed here
     policy: str | None = None  # guard policy YAML, relative to the testbed file
+    plugins: list[str] = []  # guard plugins: package folders (with a pyproject.toml), relative to the
+    # testbed file. Copied into the gateway image and installed there without dependencies.
     log_all: bool = True
+
+    _guard = field_validator("guard")(_check_id)
 
 
 class Service(Strict):

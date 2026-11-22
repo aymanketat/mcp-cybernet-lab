@@ -9,6 +9,7 @@
     mcl report   RUN_DIR                rates with 95% intervals
     mcl rescore  RUN_DIR                score a stored run again with this version's detector; no Docker needed
     mcl compare  RUN_A RUN_B            paired comparison (exact McNemar)
+    mcl replay RUN_DIR [--guard G]      with a gateway log: the decisions of a guard on the logged calls, offline
     mcl check-coverage RUN_DIR          with a gateway: every tool call of the agent is in the gateway log
     mcl reset    T.yaml                 restore every server's data to the planted state
     mcl down     T.yaml                 stop and remove the containers and networks
@@ -200,6 +201,27 @@ def cmd_rescore(args) -> int:
     return 0
 
 
+def cmd_replay(args) -> int:
+    from .report import replayed
+    from .runner import replay_run
+    run, out = Path(args.run), Path(args.out) if args.out else None
+    if out and run.resolve() in out.resolve().parents:
+        raise TestbedError("--out is inside the run folder; the folder is never changed, choose another place")
+    result = replay_run(run, args.guard, Path(args.policy) if args.policy else None)
+    print(replayed(result))
+    if out:
+        with open(out, "w", encoding="utf-8") as f:
+            f.write(json.dumps({"type": "replay"} | {k: v for k, v in result.items() if k != "calls"},
+                               ensure_ascii=False) + "\n")
+            for c in result["calls"]:
+                f.write(json.dumps({"type": "decision"} | c, ensure_ascii=False) + "\n")
+        print(f"decisions: {out}")
+    else:
+        print("nothing was written; --out FILE keeps the decisions")
+    differ = sum(c["logged"] != c["replayed"] for c in result["calls"])
+    return 1 if result["own"] and differ else 0
+
+
 def cmd_compare(args) -> int:
     from .report import compare
     print(compare(Path(args.run_a), Path(args.run_b), args.metric))
@@ -272,6 +294,13 @@ def main(argv: list[str] | None = None) -> int:
     sp.add_argument("run", help="a run folder (runs/<testbed>/<id>); it is read and never changed")
     sp.add_argument("--out", help="write the result lines scored again to this file (`mcl report FILE` reads it)")
     sp.set_defaults(fn=cmd_rescore)
+
+    sp = sub.add_parser("replay", help="put the tool calls a gateway logged to a guard again, offline")
+    sp.add_argument("run", help="a run folder made with a gateway (runs/<testbed>/<id>); it is read and never changed")
+    sp.add_argument("--guard", help="a built-in guard or an installed plugin guard (default: the run's guard)")
+    sp.add_argument("--policy", help="a policy file, YAML or JSON, laid over the default policy (default: the run's policy.json)")
+    sp.add_argument("--out", help="write one line per decision to this file, after a line describing the replay")
+    sp.set_defaults(fn=cmd_replay)
 
     sp = sub.add_parser("web", help="local web UI to configure and run testbeds")
     sp.add_argument("--dir", default=".", help="project directory (default: current)")

@@ -12,6 +12,12 @@ A blocked tool call is answered with a JSON-RPC error, code -32001, and never re
 Control runs on 127.0.0.1:9090, inside the container only: agents and servers cannot reach it.
 Configuration: MCL_GATEWAY = {"guard": ..., "servers": {id: {"label", "domain"}}},
 policy file /policy/current.json.
+
+The log has one line per tool call, written when the call is blocked or when its result returns.
+Each carries the server's label, a call ID (c1, c2, ... per task) and the numbers of its two guard
+steps, seq_call and seq_result (see guards.Session): calls are served on threads, so the order of
+the lines is not always the order in which the guard saw calls and results. seq_result is null
+when no result was put to the guard: a blocked call, an error result, no answer.
 """
 
 from __future__ import annotations
@@ -26,7 +32,7 @@ from http.server import BaseHTTPRequestHandler
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
-from guards import make_guard  # noqa: E402
+from guards import Context, Session, guard_info, make_guard  # noqa: E402
 from httpproxy import Proxy, jsonrpc_error, parse_messages, serve  # noqa: E402
 from mcpclient import result_text  # noqa: E402
 
@@ -38,16 +44,25 @@ BLOCKED = -32001
 class State:
     lock = threading.Lock()
     guard = None
+    session = None  # the guard steps of the current task, numbered
+    plugins: list = []  # where the guard comes from, when it is a plugin
     log = None
     task = None
     t0 = time.monotonic()
-    pending: dict = {}  # JSON-RPC id -> (server, tool, arguments), per session
+    pending: dict = {}  # (MCP session, JSON-RPC id) -> (tool, arguments, the guard's decision)
 
 
 def load_guard():
     policy = json.loads(POLICY_FILE.read_text()) if POLICY_FILE.exists() else {}
-    State.guard = make_guard(CONFIG["guard"], policy)
+    State.guard = make_guard(CONFIG["guard"], policy, Context(labels()))
+    State.session = Session(State.guard)
+    info = guard_info(CONFIG["guard"])
+    State.plugins = [info] if info else []
     return policy.get("version")
+
+
+def labels() -> dict:
+    return {server: spec.get("label") for server, spec in CONFIG["servers"].items()}
 
 
 def write(**event):
@@ -77,13 +92,15 @@ class Gateway(Proxy):
         params = msg.get("params") or {}
         tool, args = params.get("name"), params.get("arguments") or {}
         with State.lock:
-            allowed, reason = State.guard.on_call(self.server_id, tool, args)
+            step = State.session.call(self.server_id, tool, args)
             key = (self.headers.get("Mcp-Session-Id"), msg.get("id"))
-            State.pending[key] = (tool, args)
-        if allowed:
+            State.pending[key] = (tool, args, step)
+        if step["allowed"]:
             return None
+        reason = step["reason"]
         write(type="tool_call", server=self.server_id, tool=tool, arguments=args,
-              decision="block", reason=reason, result_text=None)
+              decision="block", reason=reason, result_text=None, call_id=step["call_id"],
+              label=CONFIG["servers"][self.server_id].get("label"), seq_call=step["seq_call"], seq_result=None)
         return jsonrpc_error(msg.get("id"), BLOCKED, f"blocked: {reason}", {"blocked": True})
 
     def after(self, body, status, ctype, resp):
@@ -95,7 +112,8 @@ class Gateway(Proxy):
             return
         key = (self.headers.get("Mcp-Session-Id"), msg.get("id"))
         with State.lock:
-            tool, args = State.pending.pop(key, (None, {}))
+            # No entry: a new task started while this call was at its server. Its guard is gone.
+            tool, args, step = State.pending.pop(key, (None, {}, None))
             text, is_error = None, None
             for m in parse_messages(resp, ctype):
                 if m.get("id") == msg.get("id"):
@@ -103,10 +121,12 @@ class Gateway(Proxy):
                         text, is_error = result_text(m["result"]), bool(m["result"].get("isError"))
                     elif "error" in m:
                         text, is_error = f"error: {m['error'].get('message')}", True
-            if text is not None and not is_error:
-                State.guard.on_result(self.server_id, tool, args, text)
+            seq_result = State.session.result(step["call_id"], self.server_id, tool, args, text, is_error) \
+                if step else None
         write(type="tool_call", server=self.server_id, tool=tool, arguments=args, decision="allow",
-              reason="", result_text=text, is_error=is_error, http_status=status)
+              reason="", result_text=text, is_error=is_error, http_status=status,
+              call_id=step and step["call_id"], label=CONFIG["servers"][self.server_id].get("label"),
+              seq_call=step and step["seq_call"], seq_result=seq_result)
 
 
 class Control(BaseHTTPRequestHandler):
@@ -125,7 +145,8 @@ class Control(BaseHTTPRequestHandler):
                 path.parent.mkdir(parents=True, exist_ok=True)
                 State.log, State.task, State.t0 = open(path, "w", encoding="utf-8"), cmd.get("task"), time.monotonic()
                 State.pending.clear()
-                write(type="start", guard=CONFIG["guard"], policy_version=version)
+                write(type="start", guard=CONFIG["guard"], policy_version=version,
+                      labels=labels(), plugins=State.plugins)
         body = b'{"ok": true}'
         self.send_response(200)
         self.send_header("Content-Length", str(len(body)))

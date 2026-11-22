@@ -184,6 +184,34 @@ def rescored(name: str, pairs: list[tuple[dict, dict]]) -> str:
     return "\n".join(lines + ["  the lines scored again:"] + describe(name, [again for _, again in pairs])[1][1:])
 
 
+def replayed(r: dict) -> str:
+    """What `mcl replay` prints for the result of runner.replay_run: the guard and where it comes
+    from, the policy and its hash, and how its decisions compare with the logged ones. Arguments
+    and results are never printed; a guard's reason is printed as the guard wrote it."""
+    plugin, calls = r["guard_plugin"], r["calls"]
+    origin = (f"plugin {plugin['package']} {plugin['version']}, tree hash {plugin['tree_sha256']}"
+              if plugin else "built in")
+    same = [c for c in calls if c["logged"] == c["replayed"]]
+
+    def counts(key: str) -> str:
+        n = Counter(c[key] for c in calls)
+        return f"allow {n['allow']}, block {n['block']}"
+
+    lines = [f"Run {r['run']} replayed: {len(calls)} tool calls in {r['task_runs']} task runs",
+             f"  guard   {r['guard']} ({origin})"
+             + ("" if r["guard"] == r["guard_ran"] else f"; the run was made with {r['guard_ran']}"),
+             f"  policy  {r['policy']}, version {r['policy_version']}, sha256 {r['policy_sha256']}",
+             f"  logged    {counts('logged')}",
+             f"  replayed  {counts('replayed')}",
+             f"  same decision as logged: {len(same)} of {len(calls)}"
+             + ("   (the run's own guard and policy: every decision should be the same)" if r["own"] else "")]
+    for c in calls:
+        if c["logged"] != c["replayed"]:
+            lines.append(f"    {c['task']} {c['call_id']} {c['server']}.{c['tool']}: logged {c['logged']}, "
+                         f"replayed {c['replayed']}" + (f" ({c['reason']})" if c["reason"] else ""))
+    return "\n".join(lines)
+
+
 def compare(run_a: Path, run_b: Path, key: str = "leaked") -> str:
     a = {(r["task"], r.get("repeat", 0)): bool(r[key]) for r in load_results(run_a)}
     b = {(r["task"], r.get("repeat", 0)): bool(r[key]) for r in load_results(run_b)}

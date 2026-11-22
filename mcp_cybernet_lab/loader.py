@@ -10,6 +10,8 @@ from pathlib import Path
 import yaml
 from pydantic import ValidationError
 
+from .guards import GUARDS, UnknownGuard
+from .guards import check as check_guard
 from .schema import Testbed
 
 
@@ -59,6 +61,15 @@ def load_testbed(path: str | Path) -> Loaded:
             raise TestbedError(f"server '{s.id}': extra_canaries '{s.extra_canaries}' not found")
         if s.data and s.data.source and not (path.parent / s.data.source).is_dir():
             raise TestbedError(f"server '{s.id}': data folder '{s.data.source}' not found next to {path.name}")
+    for p in tb.gateway.plugins:
+        if not (path.parent / p / "pyproject.toml").is_file():
+            raise TestbedError(f"gateway.plugins: '{p}' must be a folder with a pyproject.toml, "
+                               f"relative to {path.name}")
+    names = [(path.parent / p).resolve().name for p in tb.gateway.plugins]
+    if len(set(names)) < len(names):
+        raise TestbedError(f"gateway.plugins: two folders have the same name ({sorted(names)})")
+    if tb.gateway.plugins and tb.gateway.guard == "none":
+        raise TestbedError("gateway.plugins needs a gateway (gateway.guard is none)")
     if tb.llm.api_key_env and not os.environ.get(tb.llm.api_key_env):
         warnings.append(f"llm: environment variable {tb.llm.api_key_env} is not set")
     asked = isinstance(data.get("llm"), dict) and data["llm"].get("egress") is not None
@@ -75,8 +86,21 @@ def check_buildable(tb: Testbed) -> None:
     for d in tb.domains:
         if d.auth == "oauth":
             todo.append(f"domain '{d.id}': auth 'oauth' (use 'token'; OAuth 2.1 is not implemented)")
-    if tb.gateway.guard in ("mcphunt", "fides"):
-        todo.append(f"gateway.guard '{tb.gateway.guard}' (external guard; integrate its code as a guard plug-in)")
+    name = tb.gateway.guard
+    if name != "none" and name not in GUARDS:
+        try:
+            check_guard(name)
+        except UnknownGuard as e:
+            if name not in ("mcphunt", "fides"):
+                raise TestbedError(f"gateway.guard: {e}. Install the plugin on this machine as well "
+                                   f"(pip install -e <its folder>): `mcl build` and replay load it here") from None
+            todo.append(f"gateway.guard '{name}' (external guard; integrate its code as a guard plug-in)")
+        except (ValueError, ImportError) as e:
+            raise TestbedError(f"gateway.guard: {e}") from None
+        else:
+            if not tb.gateway.plugins:
+                raise TestbedError(f"gateway.guard '{name}' comes from a plugin: list the plugin's folder in "
+                                   f"gateway.plugins, so that the gateway image gets it")
     for c in tb.clients:
         if c.harness in ("mcphunt", "langgraph"):
             todo.append(f"client '{c.id}': harness '{c.harness}' (only 'agent' and 'none' are built in)")

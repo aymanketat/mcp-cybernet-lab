@@ -21,6 +21,7 @@ runs/<testbed>/<run id>/
 
 from __future__ import annotations
 
+import hashlib
 import json
 import shutil
 import subprocess
@@ -30,6 +31,7 @@ from pathlib import Path
 
 import yaml
 
+from . import guards
 from .detect import Detector, analyse_task
 from .loader import Loaded, TestbedError
 from .schema import LLM_EGRESS, LLM_RELAY
@@ -207,3 +209,76 @@ def rescore(run: Path, **parameters) -> list[tuple[dict, dict]]:
                              read_jsonl(out / "sinks.jsonl"), summary, load(task))
         pairs.append((stored, again | {k: v for k, v in stored.items() if k not in again}))
     return pairs
+
+
+def policy_sha256(policy: dict) -> str:
+    """Hash of a policy's content: the same policy has the same hash whatever file it was read from."""
+    text = json.dumps(policy, sort_keys=True, ensure_ascii=False, separators=(",", ":"))
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+
+def replay_run(run: Path, guard: str | None = None, policy_file: Path | None = None) -> dict:
+    """Put the tool calls a gateway logged in a run to a guard again, offline.
+
+    By default the guard and the policy are the run's own (manifest.json, policy.json), which
+    reproduces the decisions of the live run; `guard` and `policy_file` name others. A policy
+    file is laid over the default policy for the run's servers, as `mcl build` does. With the
+    run's own guard, when that guard is a plugin, the code installed here must be the code that
+    ran: a different tree hash is refused. Nothing in the folder is changed.
+
+    Returns the guard, where it comes from, the policy and its hash, and one entry per tool call.
+    """
+    def load(path: Path):
+        return json.loads(path.read_text(encoding="utf-8"))
+
+    if not (run / "manifest.json").is_file():
+        raise TestbedError(f"{run} is not a run folder: no manifest.json")
+    manifest = load(run / "manifest.json")
+    ran = (manifest.get("gateway") or {}).get("guard", "none")
+    if ran == "none":
+        raise TestbedError(f"run {run.name} was made without a gateway (gateway.guard none): nothing to replay")
+    labels = {s["id"]: s["label"] for s in manifest["servers"]}
+    logs = sorted(run.glob("*/gateway.jsonl"))
+    if not logs:
+        raise TestbedError(f"{run}: no gateway log (<task run>/gateway.jsonl)")
+    name = guard or ran
+
+    if policy_file:
+        if not policy_file.is_file():
+            raise TestbedError(f"policy file {policy_file} not found")
+        policy = guards.default_policy({s: {"label": label} for s, label in labels.items()})
+        policy.update(yaml.safe_load(policy_file.read_text(encoding="utf-8")) or {})
+        source = str(policy_file)
+    elif (run / "policy.json").is_file():
+        policy, source = load(run / "policy.json"), "the run's policy.json"
+    else:
+        raise TestbedError(f"{run}: no policy.json; give one with --policy")
+
+    try:
+        info = guards.guard_info(name)
+        guard_object = guards.make_guard(name, policy, guards.Context(labels))
+    except guards.UnknownGuard as e:
+        raise TestbedError(f"{e}. Install the plugin on this machine (pip install -e <its folder>)") from None
+    events = {log.parent.name: read_jsonl(log) for log in logs}
+    if name == ran and info:
+        logged = {p.get("tree_sha256") for lines in events.values() for e in lines if e.get("type") == "start"
+                  for p in e.get("plugins") or [] if p.get("guard") == name}
+        logged |= {(manifest.get("guard_plugin") or {}).get("tree_sha256")} - {None}
+        if logged != {info["tree_sha256"]}:
+            raise TestbedError(
+                f"guard '{name}' is not the code that ran: installed here {info['package']} {info['version']}, "
+                f"tree hash {info['tree_sha256']}; the run recorded "
+                f"{', '.join(sorted(logged)) or 'no tree hash'}. Install the code of the run, or name "
+                f"another guard with --guard")
+
+    calls = []
+    for task, lines in events.items():
+        for e in guards.replay(guard_object, lines, labels):
+            calls.append({"task": task, "call_id": e["replay_call_id"], "server": e["server"], "tool": e["tool"],
+                          "label": labels.get(e["server"]), "seq_call": e.get("seq_call"),
+                          "seq_result": e.get("seq_result"), "logged": e.get("decision"),
+                          "replayed": "allow" if e["replay_allowed"] else "block", "reason": e["replay_reason"]})
+    return {"run": run.name, "testbed": manifest.get("testbed"), "guard": name, "guard_ran": ran,
+            "guard_plugin": info, "policy": source, "policy_version": policy.get("version"),
+            "policy_sha256": policy_sha256(policy), "own": name == ran and not policy_file,
+            "task_runs": len(events), "calls": calls}

@@ -26,7 +26,7 @@ from urllib.parse import urlsplit
 import yaml
 
 from . import __version__
-from .guards import default_policy
+from .guards import default_policy, guard_info
 from .loader import Loaded, TestbedError, check_buildable
 from .schema import LLM_EGRESS, LLM_RELAY, Client, Server, Service, Testbed
 from .seeding import canary_file_text, make_canaries, stream
@@ -59,7 +59,8 @@ def needs_token(tb: Testbed, s: Server) -> bool:
     return s.transport == "http" and any(d.id == s.domain and d.auth == "token" for d in tb.domains)
 
 
-def dockerfile(installs: list[Server], cmd: list[str], modules: list[str] = CONTAINER_MODULES) -> str:
+def dockerfile(installs: list[Server], cmd: list[str], modules: list[str] = CONTAINER_MODULES,
+               extra: list[str] = ()) -> str:
     lines = [
         f"FROM {BASE_IMAGE}",
         "RUN apt-get update && apt-get install -y --no-install-recommends \\",
@@ -81,6 +82,7 @@ def dockerfile(installs: list[Server], cmd: list[str], modules: list[str] = CONT
                      + "".join(f" '{w}'" for w in s.with_packages))
     # The lab's own Python files change most often: copy them last, to keep the layers above cached.
     lines.append("COPY " + " ".join(modules) + " /opt/mcl/")
+    lines.extend(extra)
     lines.append('ENTRYPOINT ["/opt/mcl/entrypoint.sh"]')
     lines.append(f"CMD {json.dumps(cmd)}")
     return "\n".join(lines) + "\n"
@@ -188,6 +190,36 @@ def client_service(tb: Testbed, c: Client, runs: Path) -> dict:
     if c.replicas > 1:
         svc["deploy"] = {"replicas": c.replicas}
     return svc
+
+
+PLUGIN_SITE = "/opt/mcl/site"  # where guard plugins are installed in the gateway image
+# In the image the lab's modules are plain files in /opt/mcl. This makes the import a plugin uses,
+# `mcp_cybernet_lab.guards`, name the very module the gateway runs (/opt/mcl/guards.py).
+GUARDS_SHIM = "import sys\n\nimport guards\n\nsys.modules[__name__] = guards\n"
+
+
+def plugin_folders(loaded: Loaded) -> dict[str, Path]:
+    """Name in the build context -> source folder, for every entry of gateway.plugins."""
+    return {(loaded.path.parent / p).resolve().name: (loaded.path.parent / p).resolve()
+            for p in loaded.testbed.gateway.plugins}
+
+
+def gateway_plugin_lines(tb: Testbed, names: list[str], info: dict | None) -> list[str]:
+    """Dockerfile lines that put guard plugins into the gateway image. None without plugins.
+
+    Installed without dependencies and without a package index: the build fetches nothing for a
+    plugin, and a plugin that needs more than the standard library fails the last step, which
+    loads the configured guard and compares its code with the code on the host (the tree hash).
+    A plugin's build backend must therefore be one uv can run offline (uv_build).
+    """
+    if not names:
+        return []
+    return ["COPY mcp_cybernet_lab /opt/mcl/mcp_cybernet_lab",
+            "COPY plugins /opt/mcl-plugins",
+            f"RUN uv pip install --no-deps --no-index --python /usr/bin/python3 --target {PLUGIN_SITE} "
+            + " ".join(f"/opt/mcl-plugins/{n}" for n in names),
+            f"ENV PYTHONPATH={PLUGIN_SITE}",
+            f"RUN python3 /opt/mcl/guards.py check {tb.gateway.guard}" + (f" {info['tree_sha256']}" if info else "")]
 
 
 def gateway_service(tb: Testbed, runs: Path) -> dict:
@@ -322,6 +354,8 @@ def build(loaded: Loaded, out: Path, runs: Path | None = None) -> Path:
     (out / "canaries.json").write_text(json.dumps(canaries, indent=1, ensure_ascii=False), encoding="utf-8")
 
     # Containers.
+    plugins = plugin_folders(loaded)
+    guard_plugin = guard_info(tb.gateway.guard) if tb.gateway.guard != "none" else None
     services = {}
     for s in tb.servers:
         if s.transport == "http":
@@ -334,7 +368,17 @@ def build(loaded: Loaded, out: Path, runs: Path | None = None) -> Path:
     if tb.gateway.guard != "none":
         (out / "policy").mkdir()
         (out / "policy" / "current.json").write_text(json.dumps(initial_policy(loaded), indent=1))
-        (out / "dockerfiles" / "gateway.Dockerfile").write_text(dockerfile([], ["python3", "/opt/mcl/gateway.py", "serve"]))
+        if plugins:
+            for name, src in plugins.items():
+                shutil.copytree(src, out / "context" / "plugins" / name, ignore=shutil.ignore_patterns(
+                    "__pycache__", "*.egg-info", "build", "dist", ".venv", ".git"))
+            shim = out / "context" / "mcp_cybernet_lab"
+            shim.mkdir()
+            (shim / "__init__.py").write_text("")
+            (shim / "guards.py").write_text(GUARDS_SHIM)
+        (out / "dockerfiles" / "gateway.Dockerfile").write_text(dockerfile(
+            [], ["python3", "/opt/mcl/gateway.py", "serve"],
+            extra=gateway_plugin_lines(tb, list(plugins), guard_plugin)))
         services["gateway"] = gateway_service(tb, runs)
     if any(v.builtin for v in tb.services):
         (out / "dockerfiles" / "sink.Dockerfile").write_text(dockerfile([], ["python3", "/opt/mcl/sink.py"]))
@@ -372,6 +416,11 @@ def build(loaded: Loaded, out: Path, runs: Path | None = None) -> Path:
         "runs": str(runs),
         "llm": tb.llm.model_dump(),
         "gateway": tb.gateway.model_dump(),
+        # A plugin guard: its package, version and the hash of its code as installed on this
+        # machine (the image build fails unless the image holds the same code). null = built in.
+        "guard_plugin": guard_plugin,
+        "plugins": [{"name": n, "path": str(p), "source_sha256": tree_sha256(out / "context" / "plugins" / n)}
+                    for n, p in plugins.items()],
         "domains": [d.model_dump() for d in tb.domains],
         "servers": [{"id": s.id, "package": s.package, "path": s.path,
                      "source_sha256": tree_sha256(out / "context" / "servers" / s.id) if s.path else None,

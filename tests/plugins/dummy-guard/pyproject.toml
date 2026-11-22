@@ -1,0 +1,16 @@
+# A guard plugin for the lab's own tests, and a template for a real one.
+# The gateway image installs a plugin offline (no package index), so the build backend must be
+# one that uv carries itself: uv_build, in a version range that holds the uv of the image.
+[build-system]
+requires = ["uv_build>=0.9.5,<0.10"]
+build-backend = "uv_build"
+
+[project]
+name = "mcl-dummy-guard"
+version = "0.1.0"
+description = "Test guard for MCP CyberNet Lab: no public call after a private result"
+requires-python = ">=3.10"
+dependencies = []
+
+[project.entry-points."mcp_cybernet_lab.guards"]
+dummy = "mcl_dummy_guard:DummyGuard"
