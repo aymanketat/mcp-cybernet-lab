@@ -204,6 +204,13 @@ mcl replay runs/enterprise-guarded/<id> --guard G --policy P.yaml --out decision
 
 Details: [`docs/2026-11-22-2255-guard-plugins-and-gateway-events.md`](docs/2026-11-22-2255-guard-plugins-and-gateway-events.md).
 
+**Embeddings for guards.** `gateway.embedder: <model>` adds an `embedder` service with one pinned
+multilingual model (weights in the image, no network at run time, CPU) on a network only the
+gateway shares, and gives guards `context.embed(texts)`. The vectors a guard was given are kept in
+each task's `embeddings.jsonl`, so `mcl replay --exact` reproduces the run without the service.
+Default: none. Details: [`docs/2026-11-23-0052-embedder-sidecar.md`](docs/2026-11-23-0052-embedder-sidecar.md); the candidate models and their
+calibration: [`docs/2026-11-22-2345-embedding-calibration.md`](docs/2026-11-22-2345-embedding-calibration.md).
+
 ## What `build` writes
 
 ```
