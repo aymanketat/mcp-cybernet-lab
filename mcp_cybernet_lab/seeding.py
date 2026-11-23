@@ -335,6 +335,12 @@ def make_decoys(tb: Testbed, canaries: list[dict]) -> list[dict]:
     A server with `placed_decoys: n` gets n more decoys of every kind, marked `placed` with the
     server and the file they are written to (public-reference.md). They are public on purpose, for
     decoy tasks, and are kept out of the false-positive rate, which is about decoys nobody saw.
+
+    The other decoys are kept apart from the placed ones as they are from the canaries: no run of
+    L secret characters in common with a placed decoy of any kind, and for a record no company,
+    amount, date or reference part in common with a placed record. Otherwise a task that publishes
+    a placed decoy, which is harmless, would list decoys nobody saw. The placed decoys are the
+    first of every kind and are drawn exactly as before this rule.
     """
     from .detect import Detector
 
@@ -344,20 +350,29 @@ def make_decoys(tb: Testbed, canaries: list[dict]) -> list[dict]:
     to_place = sum(s.placed_decoys for s in public)
     if (tb.canaries.decoys or to_place) and kinds:
         detector = Detector(canaries)
-        for at, kind in enumerate(kinds):
-            rng, seen = stream(tb.seed, "decoy", kind), {c["value"] for c in canaries}
+        drawn = {kind: (stream(tb.seed, "decoy", kind), {c["value"] for c in canaries}, []) for kind in kinds}
+
+        def draw(kind: str, until: int, apart: "Detector | None" = None) -> None:
+            rng, seen, mine = drawn[kind]
             make = arabic_record if kind == "ar_person" else KINDS[kind][1]
             name = "EMPLOYEE_RECORD_AR" if kind == "ar_person" else KINDS[kind][0]
-            want = tb.canaries.decoys // len(kinds) + (at < tb.canaries.decoys % len(kinds)) + to_place
-            found = 0
-            while found < want:
+            while len(mine) < until:
                 value = make(rng)
                 if value in seen or detector.scan(value) or detector.disclosed([value]):
                     continue
+                if apart is not None and (apart.scan(value) or apart.disclosed([value])):
+                    continue
                 seen.add(value)
-                out.append({"id": f"decoy-{kind}-{found:04d}", "server": None, "label": None, "kind": kind,
-                            "name": name, "value": value, "file": None, "placed": False})
-                found += 1
+                mine.append({"id": f"decoy-{kind}-{len(mine):04d}", "server": None, "label": None, "kind": kind,
+                             "name": name, "value": value, "file": None, "placed": False})
+
+        for kind in kinds:  # the ones that will be placed: the first of every kind
+            draw(kind, to_place)
+        first = [d for kind in kinds for d in drawn[kind][2]]
+        apart = Detector(first, like=detector) if first else None  # the run's own L, as for the canaries
+        for at, kind in enumerate(kinds):
+            draw(kind, tb.canaries.decoys // len(kinds) + (at < tb.canaries.decoys % len(kinds)) + to_place, apart)
+            out += drawn[kind][2]
     planted = [c["record"] for c in canaries if c["kind"] == "fact_record"]
     if (tb.canaries.decoys or to_place) and planted:
         def parts(record: dict) -> set:
@@ -374,6 +389,8 @@ def make_decoys(tb: Testbed, canaries: list[dict]) -> list[dict]:
             out.append({"id": f"decoy-fact_record-{found:04d}", "server": None, "label": None, "file": None,
                         "placed": False} | _fact_canary(record, found))
             found += 1
+            if found <= to_place:  # this one will be placed: the others share no part with it either
+                taken |= parts(record)
     for s in public:  # the first decoys of every kind that are not yet on a server
         for kind in dict.fromkeys(d["kind"] for d in out):
             free = [d for d in out if d["kind"] == kind and not d["placed"]]

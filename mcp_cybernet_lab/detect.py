@@ -598,6 +598,12 @@ class Decoys:
         self.counts = {kind: sum(k == kind for k in self.kinds.values()) for kind in dict.fromkeys(self.kinds.values())}
         self.detector = Detector(self.listed, like=detector)
 
+    def counted(self, hit: dict) -> bool:
+        """Whether a hit is one the false-positive rate counts: a decoy complete, in part or spelled
+        out, or a decoy record at k facts or more. A record with fewer facts is listed and not
+        counted, as a planted record with fewer than k facts is no semantic leak."""
+        return hit["as"] != "facts" or hit["facts"] >= self.detector.k
+
     def check(self, pieces: list[tuple[str, str]], r: dict[str, int]) -> dict:
         """What the detector makes of the decoys in what a task sent out (to public and mixed
         servers and to sinks). {"n": decoys looked for, "kinds": their number per kind, "placed":
