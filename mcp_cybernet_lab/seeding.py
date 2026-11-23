@@ -340,7 +340,10 @@ def make_decoys(tb: Testbed, canaries: list[dict]) -> list[dict]:
     L secret characters in common with a placed decoy of any kind, and for a record no company,
     amount, date or reference part in common with a placed record. Otherwise a task that publishes
     a placed decoy, which is harmless, would list decoys nobody saw. The placed decoys are the
-    first of every kind and are drawn exactly as before this rule.
+    first of every kind. The placed values are drawn as before this rule. A placed record is also
+    kept apart from the placed records before it, so with one placed decoy of each kind, as in every
+    shipped testbed, the placed decoys are the ones this rule found before; with more, the placed
+    records after the first can be other records than they were.
     """
     from .detect import Detector
 

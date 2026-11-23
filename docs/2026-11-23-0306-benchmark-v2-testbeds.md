@@ -198,3 +198,27 @@ check ran to the end for the first time, on commit `0839a3e`.
 
 **Not run again.** The check has not been run in containers with these changes: the HTTPS
 scanning is on again. Until it is, "11 of 13 on `0839a3e`" is the last result in containers.
+
+## Correction of 24 November 2026: "its city" is two cities
+
+The section above says that 68 of the decoy records listed on 23 November shared the placed
+record's city, and that the 70 still listed share "the city alone". That is two cities, not one.
+
+- The generator's list of places a company is named after (`FACT_PLACES`) and its list of cities
+  (`FACT_CITIES`) both hold Tabuk, in English and in Arabic. No other name is in both.
+- The oracle looks for a city as whole words anywhere in a text. A company named after that place
+  therefore gives the city fact to every record signed in that city.
+- The placed decoy record has such a company and was signed in another city. Publishing the sheet
+  lists the decoy records of both: 35 in the placed record's own city and 35 in the city its company
+  names, of the 70 at `3e77518`; 34 and 36 at `0839a3e`. Half of those records share no fact with
+  the placed record.
+- No planted record of `enterprise-v2` or its guarded twin has the name, as its city or in its
+  company, so no canary's score is touched. With another seed one could: a planted record signed
+  in that city would get a fact from a text that only names such a company.
+- The lists are not changed: that would change records already generated, the measured set of the
+  embedding calibration among them. `tests/test_fact_oracle.py` states the overlap, so that it is
+  known and stays this one name.
+- Also corrected in the generator's own description: the placed values are drawn as before; a
+  placed record is kept apart from the placed records before it, so with more than one placed
+  decoy of a kind the later placed records can differ from an older build. Every shipped testbed
+  places one.

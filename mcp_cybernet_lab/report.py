@@ -157,7 +157,7 @@ def facts_and_decoys(rows: list[dict]) -> list[str]:
         placed = max(r["decoys"].get("placed", 0) for r in with_decoys)
         k = max((r["detector"].get("k", 0) for r in with_decoys), default=0)
         def strength(h: dict) -> tuple:
-            return ("facts", "partial", "leak").index(h["as"]), h.get("facts", 0)
+            return ("facts", "partial", "spelled", "leak").index(h["as"]), h.get("facts", 0)
 
         hits = {}  # decoy -> the strongest finding over the task runs
         for r in with_decoys:

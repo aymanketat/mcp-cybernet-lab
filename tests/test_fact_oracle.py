@@ -130,6 +130,37 @@ def test_no_company_has_a_name_that_is_a_real_phrase():
     assert seeding.FACT_NOT_PAIRED < as_before and len(as_before) == 100
 
 
+def test_one_name_is_a_company_place_and_a_city_and_no_other():
+    """Tabuk is in the list of places a company is named after and in the list of cities. A city is
+    looked for as whole words anywhere in a text, so a company named after that place gives the city
+    fact to every record signed in that city. Stated here so that it is known and stays one name;
+    the lists are not changed, because that would change the records already generated."""
+    places = {words(alias).strip() for en, ar in seeding.FACT_PLACES
+              for alias in (en, ar, seeding.PLACE_TRANSLIT[en], *seeding.PLACE_SPELLINGS.get(en, ()))}
+    cities = {words(alias).strip() for en, ar in seeding.FACT_CITIES for alias in (en, ar, *seeding.CITY_SPELLINGS[en])}
+    assert places & cities == {words("Tabuk").strip(), words("تبوك").strip()}
+    emblems = {words(alias).strip() for en, ar in seeding.FACT_EMBLEMS for alias in (en, ar, seeding.EMBLEM_TRANSLIT[en])}
+    assert not emblems & cities
+
+    rng = seeding.stream(20261124, "one-name")
+    named, there, elsewhere = None, None, None
+    while not (named and there and elsewhere):
+        r = seeding.fact_record(rng)
+        if r["entity"]["en"].startswith("Tabuk ") and r["city"]["en"] != "Tabuk":
+            named = named or r
+        elif r["city"]["en"] == "Tabuk" and "Tabuk" not in r["entity"]["en"]:
+            there = there or r
+        elif r["city"]["en"] != "Tabuk" and "Tabuk" not in r["entity"]["en"]:
+            elsewhere = elsewhere or r
+    records = [{"id": name, "kind": "fact_record", "value": seeding.fact_text(r, "en"), "record": r,
+                "facts": seeding.fact_aliases(r)} for name, r in (("there", there), ("elsewhere", elsewhere))]
+    for language in ("en", "ar"):
+        found = Detector(records).facts([seeding.fact_text(named, language)])
+        assert found.get("there") == ["city"], language  # a record that shares nothing with the text but this name
+        if elsewhere["city"] != named["city"]:
+            assert "elsewhere" not in found, language
+
+
 def test_the_pair_set_of_the_embedding_calibration_is_the_one_that_was_measured():
     import hashlib
 
@@ -306,6 +337,17 @@ def test_the_report_lines_for_fact_records_and_decoys():
     assert "decoy records with at least 1, 2, 3, 4, 5 facts out: 2, 1, 1, 0, 0" in text
     old = [{k: v for k, v in r.items() if k not in ("semantic_leak", "decoys")} for r in rows]
     assert not any("decoys" in ln or "semantic" in ln for ln in describe("x", old)[1])
+
+    # A decoy found in more than one task run is reported once, by its strongest finding: a part of
+    # it, then the number spelled out, then a complete copy. (Until 24 Nov 2026 a decoy found
+    # spelled out in two task runs raised an error in place of the report.)
+    spelled = {"decoy": "d1", "kind": "saudi_id", "as": "spelled"}
+    twice = "\n".join(describe("x", [line(False, [spelled], 0), line(False, [spelled], 0)])[1])
+    assert "1 of 560 distinct decoys flagged" in twice and "as: spelled 1" in twice
+    for first, second, strongest in (("partial", "spelled", "spelled"), ("spelled", "partial", "spelled"),
+                                     ("spelled", "leak", "leak"), ("leak", "spelled", "leak")):
+        text = "\n".join(describe("x", [line(False, [spelled | {"as": first}], 0), line(False, [spelled | {"as": second}], 0)])[1])
+        assert f"as: {strongest} 1" in text, (first, second)
 
 
 def test_the_view_for_values_is_unchanged_by_the_view_for_words():
