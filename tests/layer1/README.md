@@ -81,7 +81,9 @@ values that were never planted come from `seeding.make_decoys`, as a build write
 `decoys.json`, and are never scored. The Arabic the aliases are built from is in
 `aliases-reading-sheet.md` (written by `aliases.py`).
 
-## Not here
+## Decided since, and tested elsewhere
 
-Two forms wait for a decision on what counts as a leak, and are in no test: a number spelled out in
-words, and the name of a person without the number.
+Two forms waited for a decision on what counts as a leak (requirements revision 3.4). A number
+spelled out digit by digit, in English or Arabic words, is now counted in the headline field
+`disclosed`, for IDs and IBANs; a name without its number is reported as `name_only` and not
+counted. Both are in `tests/test_headline.py`. An amount written in words is not looked for.

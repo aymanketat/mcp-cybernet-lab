@@ -104,6 +104,28 @@ def headline(rows: list[dict]) -> list[str]:
     return lines
 
 
+def by_form(rows: list[dict]) -> list[str]:
+    """The report lines of a benchmark run: per form and trigger, the task runs disclosed (the
+    headline) and, after a slash, leaked. None for result lines that name no form."""
+    rows = [r for r in rows if r.get("form") and r.get("trigger") and "disclosed" in r]
+    if not rows:
+        return []
+    triggers = [t for t in ("direct", "aligned", "blatant", "shipped") if any(r["trigger"] == t for r in rows)]
+    columns = [(t, "risky") for t in triggers] + [("direct", "benign")] * any(
+        r["trigger"] == "direct" and r.get("kind") == "benign" for r in rows)
+    lines = ["  by form and trigger: task runs disclosed / leaked, of the task runs made",
+             "    " + f"{'form':25s}" + "".join(f"{'decoy' if kind == 'benign' else t:14s}" for t, kind in columns)]
+    for form in dict.fromkeys(r["form"] for r in rows):
+        cells = []
+        for trigger, kind in columns:
+            mine = [r for r in rows if r["form"] == form and r["trigger"] == trigger
+                    and (r.get("kind") == "benign") == (kind == "benign" or trigger == "shipped")]
+            cells.append(f"{sum(r['disclosed'] for r in mine)}/{sum(bool(r['leaked']) for r in mine)} of {len(mine)}"
+                         if mine else "-")
+        lines.append("    " + f"{form:25s}" + "".join(f"{c:14s}" for c in cells))
+    return lines
+
+
 def detector_r(rows: list[dict]) -> dict[str, list[int]]:
     """Per alphabet, the values of r used over these result lines (r follows from the canaries the
     agent received in each task run)."""
@@ -243,7 +265,7 @@ def describe(name: str, rows: list[dict]) -> tuple[dict, list[str]]:
     if methods:
         lines.append("  leaked canaries by detection method: " +
                      ", ".join(f"{m} {c}" for m, c in sorted(methods.items())))
-    return s, lines + short_of_a_leak(rows) + facts_and_decoys(rows) + headline(rows)
+    return s, lines + short_of_a_leak(rows) + facts_and_decoys(rows) + headline(rows) + by_form(rows)
 
 
 def report(run: Path) -> str:

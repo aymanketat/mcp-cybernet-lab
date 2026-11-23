@@ -780,5 +780,6 @@ def analyse_task(detector: Detector, labels: dict[str, str], trace: list[dict],
         "detector": {**detector.params, "r": compared["r"], "received": compared["n"]},
         # The headline, and what is reported beside it (with to_mixed and answer_exposes above).
         "disclosed": bool(disclosures), "disclosures": disclosures, "name_only": name_only,
-    } | ({"semantic_leak": semantic} if detector.records else {}) \
+    } | {k: task[k] for k in ("form", "trigger") if k in task} \
+      | ({"semantic_leak": semantic} if detector.records else {}) \
       | ({"decoys": decoys.check(sent["any"], compared["r"])} if decoys is not None else {})
