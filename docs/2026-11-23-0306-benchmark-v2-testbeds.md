@@ -12,9 +12,11 @@ public file share with one decoy of every kind. Both build; the ten testbeds shi
 to the same files as before.
 
 **Not yet run in containers.** The check that drives the new servers through the gateway
-(`tests/benchmark/live_check.py`) is written and could not be run on 23 November: on this host,
-image builds that fetch packages failed, because containers were again shown certificates issued
-by an antivirus product in place of the real ones (see "The container check" below). Everything
+(`tests/benchmark/live_check.py`) is written and has not run to the end: on this host, image
+builds that fetch packages fail, because containers are shown certificates issued by an antivirus
+product in place of the real ones (see "The container check" below). Since the afternoon of
+23 November the two new servers no longer fetch anything in their image builds ("Locked wheels"),
+and both images build and start; the check still stops at an image that does fetch. Everything
 else in this note was run.
 
 ## The two testbeds
@@ -77,6 +79,27 @@ leaves the company for one customer. A canary in a reply is therefore reported a
 as a leak. The three tickets shipped now are ordinary requests; the benchmark's tickets come with
 the tasks.
 
+## Locked wheels
+
+Added on 23 November after review. The images of `crm` and `ticketing` install nothing from the
+network. Each server folder holds `wheels.lock`: the one dependency (`mcp==2.3.0`) and the 27
+packages it needs, each with the SHA-256 of its wheel for x86_64 and aarch64, for the Python of
+the server images (3.11). `mcl build` downloads exactly those wheels on the host with the hashes
+required, checks every file against the lock again, builds the server itself into a wheel on the
+host, and puts all of it into the build context (`context/wheels/<server>`). The image mounts
+that folder for one step and installs from it with the hashes required
+(`images/runtime/install_wheels.py`), so the wheels are not a layer of the image. The manifest
+records the hash of the lock and of every wheel.
+
+- A server folder without `wheels.lock` is installed as before, and its Dockerfile is the same as
+  before. `install_server.py` is not changed, so no existing image is rebuilt because of this.
+- `python -m mcp_cybernet_lab.serverlock servers/<name>` writes a lock again.
+- Measured on 23 November, with containers still shown the antivirus product's certificate: both
+  images built, the install step taking a few seconds, and `mcp-crm --help` ran in a container
+  with no network at all.
+- What an image build still fetches is what every lab image fetches in its first layers: the base
+  image, the system packages and `mcp-proxy`. Those layers were in this host's build cache.
+
 ## Placed decoys
 
 `mcl build` draws `placed_decoys` more decoys of every kind for the server that asks for them,
@@ -93,7 +116,7 @@ it. That block is a false alarm in the lab's count, which is what a decoy task i
 
 ## Checked
 
-- Tests: 767 pass (747 before this round).
+- Tests: 767 pass (747 before this round); 793 with the locked wheels and the headline field.
 - The ten testbeds shipped before build to the same files as at `f2213dc`, apart from the
   manifest's commit and `decoys.json`; `mcl rescore` and `mcl replay` print the same output on six
   stored runs.
@@ -114,5 +137,10 @@ On 23 November 2026 it stopped at the first new image: the `crm` image could not
 dependency (`invalid peer certificate: UnknownIssuer`). Read from inside a container, without
 trusting anything, the certificates of `pypi.org`, `files.pythonhosted.org` and
 `api.deepseek.com` all named "Norton Web/Mail Shield Root" as issuer. No container was made to
-trust that certificate. Images already built are not affected; the two new servers cannot be
-built until the host shows containers the real certificates again. The check has not passed.
+trust that certificate.
+
+In the afternoon of the same day, with the locked wheels, `crm` and `ticketing` built. The check
+then stopped at `partners`: it is the public file share, a second copy of the filesystem server
+that `files` uses, and its image installs that package from the npm registry. Containers were
+still shown the antivirus product's certificate, so that fetch failed. The check has not passed;
+it needs the host to show containers the real certificates once, for that image.

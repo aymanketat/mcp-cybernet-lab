@@ -21,7 +21,7 @@ sys.path.insert(0, str(ROOT / "servers" / "ticketing"))
 from crm import store as crm_store  # noqa: E402
 from ticketing import store as ticket_store  # noqa: E402
 
-from mcp_cybernet_lab import seeding  # noqa: E402
+from mcp_cybernet_lab import embedding, seeding, serverlock  # noqa: E402
 from mcp_cybernet_lab.compose import build  # noqa: E402
 from mcp_cybernet_lab.detect import Decoys, Detector, analyse_task  # noqa: E402
 from mcp_cybernet_lab.guards import Taint, default_policy, replay  # noqa: E402
@@ -42,11 +42,16 @@ def built(tmp_path_factory):
         return seeding.make_decoys(tb.model_copy(update={"canaries": tb.canaries.model_copy(update={"decoys": FEW})}),
                                    canaries)
 
+    def listed(tb_dir, s, lock, out):  # no download in this build; test_locked_servers... does one
+        (out / "context" / "wheels" / s.id).mkdir(parents=True, exist_ok=True)
+        return {"lock_sha256": embedding.file_sha256(lock), "wheels": {}}
+
     full, compose.make_decoys = compose.make_decoys, few
+    wheels, compose.server_wheels = compose.server_wheels, listed
     try:
         out = build(load_testbed(V2), tmp_path_factory.mktemp("v2") / "out")
     finally:
-        compose.make_decoys = full
+        compose.make_decoys, compose.server_wheels = full, wheels
     load = lambda name: json.loads((out / name).read_text(encoding="utf-8"))  # noqa: E731
     return {"out": out, "canaries": load("canaries.json"), "decoys": load("decoys.json"),
             "crm": load("data/crm/crm.json"), "manifest": load("manifest.json")}
@@ -219,3 +224,57 @@ def test_fact_records_can_be_set_for_one_server():
     tb = Bed.model_validate({"testbed": "t", "servers": servers, "clients": [], "canaries": {"fact_records": 1}})
     count = {s: sum(c["server"] == s and c["kind"] == "fact_record" for c in seeding.make_canaries(tb)) for s in "abc"}
     assert count == {"a": 1, "b": 2, "c": 0}
+
+
+# --- locked wheels -----------------------------------------------------------------------------------
+def test_the_new_servers_are_installed_from_wheels_and_the_others_as_before(built):
+    files = {p.stem: p.read_text(encoding="utf-8") for p in (built["out"] / "dockerfiles").glob("*.Dockerfile")}
+    for sid in ("crm", "ticketing"):
+        assert "COPY install_wheels.py /opt/mcl/\n" in files[sid]
+        assert (f"RUN --mount=type=bind,source=wheels/{sid},target=/wheels python3 /opt/mcl/install_wheels.py "
+                f"/wheels {sid}\n") in files[sid]
+        assert "install_server.py local" not in files[sid] and f"COPY servers/{sid}" not in files[sid]
+    assert "install_wheels" not in "".join(text for sid, text in files.items() if sid not in ("crm", "ticketing"))
+    assert "RUN python3 /opt/mcl/install_server.py local /opt/mcp-src/paste - paste\n" in files["paste"]
+    recorded = {s["id"]: s.get("locked") for s in built["manifest"]["servers"]}
+    assert {sid for sid, lock in recorded.items() if lock} == {"crm", "ticketing"}
+    assert recorded["crm"]["lock_sha256"] == embedding.file_sha256(ROOT / "servers/crm/wheels.lock")
+
+
+def test_the_locks_hold_the_one_dependency_and_all_it_needs_for_both_processors():
+    crm, ticketing = (embedding.read_lock(ROOT / "servers" / name / serverlock.LOCK) for name in ("crm", "ticketing"))
+    assert crm == ticketing and "mcp==2.3.0" in crm and len(crm) >= 20
+    assert all(hashes and all(len(h) == 64 for h in hashes) for hashes in crm.values())
+    assert any(len(hashes) == 2 for hashes in crm.values())  # a compiled package: one wheel per processor type
+    assert serverlock.dependencies(ROOT / "servers/crm") == ["mcp==2.3.0"]
+
+
+def test_a_wheel_that_is_not_the_locked_one_is_refused(tmp_path):
+    lock = tmp_path / "wheels.lock"
+    lock.write_text("demo==1.0 \\\n    --hash=sha256:" + "0" * 64 + "\n", encoding="utf-8")
+    (tmp_path / "w").mkdir()
+    (tmp_path / "w" / "demo-1.0-py3-none-any.whl").write_bytes(b"not the locked file")
+    with pytest.raises(embedding.EmbeddingError, match="not with a locked hash"):
+        embedding.check_wheels(tmp_path / "w", lock)
+    (tmp_path / "w" / "demo-1.0-py3-none-any.whl").unlink()
+    with pytest.raises(embedding.EmbeddingError, match="not downloaded"):
+        embedding.check_wheels(tmp_path / "w", lock)
+
+
+@pytest.mark.full_wheels
+def test_locked_servers_get_their_wheels_into_the_build_context(tmp_path):
+    """The real thing: pip downloads the locked wheels and builds the server's own. Needs a network."""
+    import subprocess
+    probe = subprocess.run([sys.executable, "-m", "pip", "download", "--quiet", "--no-deps", "--dest",
+                            str(tmp_path / "probe"), "idna==3.20"], capture_output=True, text=True)
+    if probe.returncode != 0:
+        pytest.skip("pip cannot download here (no network)")
+    out = build(load_testbed(V2), tmp_path / "out")
+    folder = out / "context" / "wheels" / "crm"
+    named = json.loads((folder / "server.json").read_text(encoding="utf-8"))
+    assert named["package"] == "mcl-crm" and (folder / named["wheel"]).is_file() and (folder / "wheels.lock").is_file()
+    wheels = sorted(p.name for p in folder.glob("*.whl") if p.name != named["wheel"])
+    assert len(wheels) == len(embedding.read_lock(folder / "wheels.lock"))
+    manifest = json.loads((out / "manifest.json").read_text(encoding="utf-8"))
+    recorded = next(s for s in manifest["servers"] if s["id"] == "crm")["locked"]["wheels"]
+    assert sorted(recorded) == wheels and all(embedding.file_sha256(folder / w) == recorded[w] for w in wheels)

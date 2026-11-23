@@ -168,9 +168,10 @@ def fetch(name: str, root: Path | None = None, log=print) -> Path:
     return folder
 
 
-def pip_download(dest: Path, machine: str, what: list[str]) -> list[str]:
-    """The pip command that downloads wheels for the embedder image's Python on one processor type."""
-    version, abi = IMAGE_PYTHON
+def pip_download(dest: Path, machine: str, what: list[str], python: tuple[str, str] = IMAGE_PYTHON) -> list[str]:
+    """The pip command that downloads wheels for an image's Python on one processor type: the
+    embedder image's, unless `python` (version, ABI tag) names another."""
+    version, abi = python
     cmd = [sys.executable, "-m", "pip", "download", "--quiet", "--dest", str(dest), "--only-binary", ":all:",
            "--python-version", version, "--implementation", "cp", "--abi", abi, "--abi", "abi3", "--abi", "none"]
     for tag in ("manylinux_2_28", "manylinux_2_27", "manylinux_2_17", "manylinux2014"):

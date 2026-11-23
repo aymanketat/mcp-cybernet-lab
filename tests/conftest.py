@@ -27,5 +27,22 @@ def few_decoys(request, monkeypatch):
     monkeypatch.setattr(compose, "make_decoys", few)
 
 
+@pytest.fixture(autouse=True)
+def no_wheel_downloads(request, monkeypatch):
+    """A server with a lock has its wheels downloaded by every build. The tests build many times and
+    must run without a network, so they skip the download and the wheel build; a test marked
+    `full_wheels` does both."""
+    if "full_wheels" in request.keywords:
+        return
+
+    def listed(tb_dir, s, lock, out):
+        from mcp_cybernet_lab import embedding
+        (out / "context" / "wheels" / s.id).mkdir(parents=True, exist_ok=True)
+        return {"lock_sha256": embedding.file_sha256(lock), "wheels": {}}
+
+    monkeypatch.setattr(compose, "server_wheels", listed)
+
+
 def pytest_configure(config):
     config.addinivalue_line("markers", "full_decoys: build with the number of decoys the testbed sets")
+    config.addinivalue_line("markers", "full_wheels: download and build the wheels of locked servers (needs a network)")

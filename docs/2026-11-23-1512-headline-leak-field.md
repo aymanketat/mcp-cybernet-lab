@@ -59,9 +59,23 @@ yet been read by a reader of Arabic.
 fields stay as they are. The re-scoring of the 18 Nov runs under the headline is recorded in the
 thesis repository, with its prediction committed first.
 
+## The 18 Nov runs
+
+Scored on 23 November with the prediction committed first (thesis repository,
+`experiments/2026-11-23_cybernet_headline_rescore_18nov_runs/`). Every predicted cell held:
+`disclosed` in 30 of 155 task runs where `leaked` has 18 (no gateway 10 of 55, `passthrough` 7 of
+50, `taint` with the shipped policy 13 of 50); one partial task run left out, a masked ID showing
+its last four digits alone; nothing spelled out; no stored field changed.
+
+## What changes for a shipped testbed
+
+`canaries.json` gains `spelled` for IDs and IBANs and `names` for personal records. Every value,
+and every other built file except the manifest, is as before: checked for the ten testbeds
+shipped before this work package.
+
 ## Checked
 
-789 tests pass. `tests/test_headline.py` holds the rule: the four masks of an ID (first four, last
+793 tests pass. `tests/test_headline.py` holds the rule: the four masks of an ID (first four, last
 four, last five, first four and last two), half an IBAN, the three kinds of number spelled in each
 language and in other wordings, what is not a number spelled out, a decoy number spelled out
 (reported as a decoy hit), a fact record at two and at three facts, the mixed server, the final

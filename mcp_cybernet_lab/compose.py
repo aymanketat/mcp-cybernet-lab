@@ -23,6 +23,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import tomllib
 import zipfile
 from datetime import datetime, timezone
 from pathlib import Path
@@ -30,7 +31,7 @@ from urllib.parse import urlsplit
 
 import yaml
 
-from . import __version__, embedding
+from . import __version__, embedding, serverlock
 from .guards import default_policy, files_sha256, guard_info, installed_guards, is_code, name_clashes
 from .loader import Loaded, TestbedError, check_buildable
 from .schema import EMBEDDER, LLM_EGRESS, LLM_RELAY, Client, Server, Service, Testbed
@@ -69,7 +70,9 @@ def needs_token(tb: Testbed, s: Server) -> bool:
 
 
 def dockerfile(installs: list[Server], cmd: list[str], modules: list[str] = CONTAINER_MODULES,
-               extra: list[str] = ()) -> str:
+               extra: list[str] = (), locked: frozenset[str] = frozenset()) -> str:
+    """locked: ids of the servers whose packages lie in the build context as wheels (wheels/<id>),
+    downloaded on the host from the server's lock. They are installed from there."""
     lines = [
         f"FROM {BASE_IMAGE}",
         "RUN apt-get update && apt-get install -y --no-install-recommends \\",
@@ -82,6 +85,11 @@ def dockerfile(installs: list[Server], cmd: list[str], modules: list[str] = CONT
         "RUN chmod +x /opt/mcl/*.sh /opt/mcl/*.py",
     ]
     for s in installs:
+        if s.id in locked:  # mounted for this one step, so the wheels are not a layer of the image
+            lines.append("COPY install_wheels.py /opt/mcl/")
+            lines.append(f"RUN --mount=type=bind,source=wheels/{s.id},target=/wheels "
+                         f"python3 /opt/mcl/install_wheels.py /wheels {s.id}")
+            continue
         if s.runtime == "local":  # custom server: its source is copied into the build context
             lines.append(f"COPY servers/{s.id} /opt/mcp-src/{s.id}")
             source = f"/opt/mcp-src/{s.id}"
@@ -208,7 +216,29 @@ PLUGIN_SITE = "/opt/mcl/site"  # where guard plugins are installed in the gatewa
 GUARDS_SHIM = "import sys\n\nimport guards\n\nsys.modules[__name__] = guards\n"
 
 
-def build_wheel(source: Path, dest: Path) -> Path:
+def lock_of(tb_dir: Path, s: Server) -> Path | None:
+    """The lock of a custom server's packages (servers/<name>/wheels.lock), if the server has one."""
+    lock = tb_dir / s.path / serverlock.LOCK if s.runtime == "local" else None
+    return lock if lock is not None and lock.is_file() else None
+
+
+def server_wheels(tb_dir: Path, s: Server, lock: Path, out: Path) -> dict:
+    """Put everything the image of a locked server installs into the build context (wheels/<id>):
+    the wheels of the lock, downloaded here with every hash checked, the lock, the server itself
+    built into a wheel here, and server.json naming that wheel. Returns what the manifest records."""
+    dest = out / "context" / "wheels" / s.id
+    try:
+        wheels = serverlock.download(lock, dest)
+    except serverlock.LockError as e:
+        raise TestbedError(f"server '{s.id}': {e}") from None
+    shutil.copy(lock, dest / serverlock.LOCK)
+    own = build_wheel(tb_dir / s.path, dest, what=f"server '{s.id}'")
+    package = tomllib.loads((tb_dir / s.path / "pyproject.toml").read_text(encoding="utf-8"))["project"]["name"]
+    (dest / "server.json").write_text(json.dumps({"wheel": own.name, "package": package}), encoding="utf-8")
+    return {"lock_sha256": embedding.file_sha256(lock), "wheels": wheels}
+
+
+def build_wheel(source: Path, dest: Path, what: str = "gateway.plugins") -> Path:
     """Build a plugin folder into a wheel, on this machine, with whatever build backend it names.
 
     The folder is copied first, so the build leaves nothing in it. pip may fetch the build backend
@@ -222,7 +252,7 @@ def build_wheel(source: Path, dest: Path) -> Path:
                             str(copy)], capture_output=True, text=True)
         wheels = sorted(made.glob("*.whl")) if made.is_dir() else []
         if r.returncode != 0 or len(wheels) != 1:
-            raise TestbedError(f"gateway.plugins: '{source}' could not be built into a wheel "
+            raise TestbedError(f"{what}: '{source}' could not be built into a wheel "
                                f"({sys.executable} -m pip wheel):\n{(r.stderr or r.stdout).strip()[-1500:]}")
         dest.mkdir(parents=True, exist_ok=True)
         return Path(shutil.copy(wheels[0], dest / wheels[0].name))
@@ -550,13 +580,18 @@ def build(loaded: Loaded, out: Path, runs: Path | None = None) -> Path:
     plugins: list[dict] = []
     guard_plugin = guard_info(tb.gateway.guard) if tb.gateway.guard != "none" else None
     services = {}
+    # Custom servers with a lock: their packages are downloaded here and installed from the context.
+    locked = {s.id: server_wheels(loaded.path.parent, s, lock, out)
+              for s in tb.servers if (lock := lock_of(loaded.path.parent, s))}
     for s in tb.servers:
         if s.transport == "http":
-            (out / "dockerfiles" / f"{s.id}.Dockerfile").write_text(dockerfile([s], server_command(tb, s)))
+            (out / "dockerfiles" / f"{s.id}.Dockerfile").write_text(
+                dockerfile([s], server_command(tb, s), locked=frozenset(locked)))
             services[s.id] = server_service(tb, s)
     for c in tb.clients:
         local = [tb.server(x) for x in c.servers if tb.server(x).transport == "stdio"]
-        (out / "dockerfiles" / f"{c.id}.Dockerfile").write_text(dockerfile(local, ["sleep", "infinity"]))
+        (out / "dockerfiles" / f"{c.id}.Dockerfile").write_text(
+            dockerfile(local, ["sleep", "infinity"], locked=frozenset(locked)))
         services[c.id] = client_service(tb, c, runs)
     if tb.gateway.guard != "none":
         (out / "policy").mkdir()
@@ -630,6 +665,8 @@ def build(loaded: Loaded, out: Path, runs: Path | None = None) -> Path:
                      "requested_version": s.version, "transport": s.transport,
                      "domain": s.domain, "label": s.label,
                      "attack": s.env.get("MCL_ATTACK"), "transform": s.env.get("MCL_TRANSFORM")}
+                    # A server with a lock: the hash of the lock and of every wheel its image installs.
+                    | ({"locked": locked[s.id]} if s.id in locked else {})
                     for s in tb.servers],
         "services": [{"id": v.id, "image": v.image, "builtin": v.builtin, "domain": v.domain, "label": v.label}
                      for v in tb.services],
