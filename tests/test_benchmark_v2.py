@@ -241,6 +241,14 @@ def test_the_new_servers_are_installed_from_wheels_and_the_others_as_before(buil
     assert recorded["crm"]["lock_sha256"] == embedding.file_sha256(ROOT / "servers/crm/wheels.lock")
 
 
+def test_the_wheel_installer_is_in_the_build_context_only_for_a_locked_server(built, tmp_path):
+    assert (built["out"] / "context" / "install_wheels.py").is_file()
+    for name in ("enterprise-guarded", "toy-network"):
+        out = build(load_testbed(ROOT / "testbeds" / f"{name}.yaml"), tmp_path / name)
+        assert not (out / "context" / "install_wheels.py").exists() and not (out / "context" / "wheels").exists()
+        assert (out / "context" / "install_server.py").is_file()
+
+
 def test_the_locks_hold_the_one_dependency_and_all_it_needs_for_both_processors():
     crm, ticketing = (embedding.read_lock(ROOT / "servers" / name / serverlock.LOCK) for name in ("crm", "ticketing"))
     assert crm == ticketing and "mcp==2.3.0" in crm and len(crm) >= 20

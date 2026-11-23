@@ -43,6 +43,7 @@ PACKAGE = Path(__file__).resolve().parent
 RUNTIME = REPO / "images" / "runtime"
 CONTAINER_MODULES = ["probe.py", "mcpclient.py", "agent.py", "httpproxy.py", "authproxy.py",
                      "gateway.py", "guards.py", "sink.py"]
+WHEEL_INSTALLER = "install_wheels.py"  # in images/runtime; copied into a build context only for a locked server
 RELAY_MODULE = "llmrelay.py"  # copied only into the LLM relay image, and only when one is built
 HTTP_PORT = 8080
 LLM_PORT = 443  # the relay accepts and forwards HTTPS only
@@ -86,9 +87,9 @@ def dockerfile(installs: list[Server], cmd: list[str], modules: list[str] = CONT
     ]
     for s in installs:
         if s.id in locked:  # mounted for this one step, so the wheels are not a layer of the image
-            lines.append("COPY install_wheels.py /opt/mcl/")
+            lines.append(f"COPY {WHEEL_INSTALLER} /opt/mcl/")
             lines.append(f"RUN --mount=type=bind,source=wheels/{s.id},target=/wheels "
-                         f"python3 /opt/mcl/install_wheels.py /wheels {s.id}")
+                         f"python3 /opt/mcl/{WHEEL_INSTALLER} /wheels {s.id}")
             continue
         if s.runtime == "local":  # custom server: its source is copied into the build context
             lines.append(f"COPY servers/{s.id} /opt/mcp-src/{s.id}")
@@ -544,7 +545,9 @@ def build(loaded: Loaded, out: Path, runs: Path | None = None) -> Path:
     if out.exists():
         shutil.rmtree(out)
     (out / "dockerfiles").mkdir(parents=True)
-    shutil.copytree(RUNTIME, out / "context")
+    # install_wheels.py is for servers with a lock only: it is copied further down, when there is one,
+    # so that a testbed without such a server has the build context it always had.
+    shutil.copytree(RUNTIME, out / "context", ignore=shutil.ignore_patterns(WHEEL_INSTALLER))
     for m in CONTAINER_MODULES:
         shutil.copy(PACKAGE / m, out / "context" / m)
     for s in tb.servers:
@@ -583,6 +586,8 @@ def build(loaded: Loaded, out: Path, runs: Path | None = None) -> Path:
     # Custom servers with a lock: their packages are downloaded here and installed from the context.
     locked = {s.id: server_wheels(loaded.path.parent, s, lock, out)
               for s in tb.servers if (lock := lock_of(loaded.path.parent, s))}
+    if locked:
+        shutil.copy(RUNTIME / WHEEL_INSTALLER, out / "context" / WHEEL_INSTALLER)
     for s in tb.servers:
         if s.transport == "http":
             (out / "dockerfiles" / f"{s.id}.Dockerfile").write_text(

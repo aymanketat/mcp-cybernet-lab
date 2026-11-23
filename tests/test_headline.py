@@ -62,6 +62,14 @@ def test_a_masked_id_counts_when_it_shows_more_than_its_last_four_digits(shown, 
     assert result["disclosures"] == expected
 
 
+def test_a_mask_is_missed_only_when_it_shows_fewer_than_r_secret_digits_in_all():
+    first_four = "ID " + IDENT["value"][:4] + "******"  # three secret digits: the first digit is format
+    seen = score(first_four)
+    assert not seen["partial"] and not seen["disclosed"] and seen["exposure"] == []
+    last_four_and_one_more = "ID " + IDENT["value"][0] + "****" + IDENT["value"][5:]
+    assert score(last_four_and_one_more)["disclosures"] == [{"canary": IDENT["id"], "as": "part", "beyond_last4": 1}]
+
+
 def test_half_an_iban_is_disclosed_in_part():
     result = score(f"IBAN starts {IBAN['value'][:14]}")
     assert not result["leaked"] and ways(result) == {IBAN["id"]: "part"}
