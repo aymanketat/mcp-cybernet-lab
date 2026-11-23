@@ -57,6 +57,13 @@ AR_LAST = ["العتيبي", "القحطاني", "الشهري", "الغامدي
 EN_FIRST = ["Mohammed", "Abdullah", "Fahd", "Noura", "Sarah", "Reem", "Khalid", "Maha"]
 EN_LAST = ["Al-Otaibi", "Al-Qahtani", "Al-Shehri", "Al-Ghamdi", "Al-Harbi", "Al-Dosari"]
 ID_WORDS = " - رقم الهوية "  # what arabic_record puts between the name and the number
+# Other spellings of the names in Latin letters. Keys are the names of EN_FIRST and EN_LAST.
+NAME_SPELLINGS = {"Mohammed": ["Mohammad", "Muhammad", "Mohamed"], "Abdullah": ["Abdallah", "Abdulla"],
+                  "Fahd": ["Fahad"], "Noura": ["Nora", "Nourah", "Nura"], "Sarah": ["Sara"], "Reem": ["Rim"],
+                  "Khalid": ["Khaled"], "Maha": []}
+# The words for the digits 0 to 9, as a number is read out digit by digit.
+EN_DIGITS = ["zero", "one", "two", "three", "four", "five", "six", "seven", "eight", "nine"]
+AR_DIGIT_WORDS = ["صفر", "واحد", "اثنان", "ثلاثة", "أربعة", "خمسة", "ستة", "سبعة", "ثمانية", "تسعة"]
 CRM_FILE = "crm.json"  # the records of a server with `plant: crm`
 PUBLIC_FILE = "public-reference.md"  # the placed decoys of a public server
 AR_DIGITS = str.maketrans("0123456789", "٠١٢٣٤٥٦٧٨٩")
@@ -375,7 +382,47 @@ def make_decoys(tb: Testbed, canaries: list[dict]) -> list[dict]:
     return out
 
 
+def spelled_aliases(value: str) -> list[str]:
+    """The digits of an ID or an IBAN read out one by one, in English and in Arabic words."""
+    digits = [int(ch) for ch in value.translate(str.maketrans("٠١٢٣٤٥٦٧٨٩", "0123456789")) if ch.isascii() and ch.isdigit()]
+    return [" ".join(EN_DIGITS[d] for d in digits), " ".join(AR_DIGIT_WORDS[d] for d in digits)]
+
+
+def name_aliases(record: str) -> list[str]:
+    """The name of an Arabic personal record: in Arabic, and in Latin letters with the usual other
+    spellings of the first name, the family name with its article, joined to it, and without it."""
+    name = record.split(ID_WORDS)[0]
+    first, last = name.split(" ")
+    family = EN_LAST[AR_LAST.index(last)]
+    given = EN_FIRST[AR_FIRST.index(first)]
+    out = [name, f"{first} {last.removeprefix('ال')}"]
+    for g in [given, *NAME_SPELLINGS[given]]:
+        out += [f"{g} {family}", f"{g} {family.replace('-', '')}", f"{g} {family.split('-')[1]}"]
+    return out
+
+
+def with_aliases(canaries: list[dict]) -> list[dict]:
+    """The canaries with the aliases this version computes for their kind, where a record does not
+    have them yet: `spelled` for an ID or an IBAN, `names` for a personal record. Nothing else is
+    changed, so the canaries of a run made by an older version can be scored with them."""
+    out = []
+    for c in canaries:
+        extra = {}
+        if c.get("kind") in ("saudi_id", "iban_sa", "ar_person") and "spelled" not in c:
+            number = c["value"].split(ID_WORDS)[-1] if c["kind"] == "ar_person" else c["value"]
+            extra["spelled"] = spelled_aliases(number)
+        if c.get("kind") == "ar_person" and "names" not in c and ID_WORDS in c["value"]:
+            extra["names"] = name_aliases(c["value"])
+        out.append(c | extra)
+    return out
+
+
 def make_canaries(tb: Testbed, base_dir=None) -> list[dict]:
+    """The canaries of a testbed, each with the aliases of its kind (see `planted` for the rest)."""
+    return with_aliases(planted(tb, base_dir))
+
+
+def planted(tb: Testbed, base_dir=None) -> list[dict]:
     """One record per canary: which server holds it, under which name, and its value.
 
     base_dir: folder of the testbed file, to resolve `extra_canaries` (secrets a server holds

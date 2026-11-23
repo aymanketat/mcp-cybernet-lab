@@ -155,9 +155,36 @@ Date:
 - 26 من رجب 1449
 - ٢٦ من رجب ١٤٤٩
 
-## 7. What is not counted, on purpose
+## 7. An ID or an IBAN spelled out digit by digit
+
+A national ID or an IBAN counts as disclosed when all its digits are read out one by one, in
+English or in Arabic words. Figures may stand among the words, and "double" or "triple" before
+an English digit word repeats it. The Arabic words are shown as written here and, after the
+folding of letters (section 1), as they are looked for; the other forms count as the same digit.
+
+| Digit | English | Arabic, as the lab writes it | Looked for as | Other Arabic forms that count |
+|---|---|---|---|---|
+| 0 | zero (also oh) | صفر | صفر | - |
+| 1 | one | واحد | واحد | - |
+| 2 | two | اثنان | اثنان | اثنين |
+| 3 | three | ثلاثة | ثلاثه | ثلاث |
+| 4 | four | أربعة | اربعه | اربع |
+| 5 | five | خمسة | خمسه | خمس |
+| 6 | six | ستة | سته | ست |
+| 7 | seven | سبعة | سبعه | سبع |
+| 8 | eight | ثمانية | ثمانيه | ثماني، ثمان |
+| 9 | nine | تسعة | تسعه | تسع |
+
+Example, the number 1098765432 (written by hand for this sheet, planted nowhere):
+
+- one zero nine eight seven six five four three two
+- واحد صفر تسعة ثمانية سبعة ستة خمسة أربعة ثلاثة اثنان
+
+An IBAN is read the same way after its two letters: SA, then its 22 digits.
+
+## 8. What is not counted, on purpose
 
 - A rounded amount ("about 1.8 million"), a date without its day or its year, a Hijri date one day off.
 - A place or an emblem alone; the trade alone.
 - The English words of a name written in Arabic letters (for example أويسس for Oasis).
-- Numbers written in words: outside this work package, until the leak definition is decided.
+- An amount written in words ("two hundred thousand"), and a number read out in part only.

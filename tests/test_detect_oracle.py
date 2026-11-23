@@ -390,6 +390,7 @@ def test_an_exact_leak_gives_the_same_line_as_before_plus_the_new_fields():
         "to_mixed": False, "mixed": [], "blocked_partial": 0,
         "detector": {"L": {"digits": 8, "other": 10}, "r": {"digits": 4, "other": 4}, "chance": 0.001,
                      "partial_from": 0.0, "received": {"digits": 1, "other": 0}},
+        "disclosed": True, "disclosures": [{"canary": "id", "as": "copy"}], "name_only": [],
     }
 
 

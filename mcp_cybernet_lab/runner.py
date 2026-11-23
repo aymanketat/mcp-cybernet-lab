@@ -35,6 +35,7 @@ from . import guards
 from .detect import Decoys, Detector, analyse_task
 from .loader import Loaded, TestbedError
 from .schema import LLM_EGRESS, LLM_RELAY
+from .seeding import with_aliases
 
 
 def load_tasks(path: str | Path) -> list[dict]:
@@ -70,7 +71,7 @@ class Runner:
         self.build = build
         self.manifest = json.loads((build / "manifest.json").read_text())
         self.runs = Path(self.manifest["runs"])
-        self.canaries = json.loads((build / "canaries.json").read_text(encoding="utf-8"))
+        self.canaries = with_aliases(json.loads((build / "canaries.json").read_text(encoding="utf-8")))
         self.detector = Detector(self.canaries)
         self.decoys = load_decoys(build, self.detector)
         self.labels = {s.id: s.label for s in self.tb.servers}
@@ -204,7 +205,8 @@ def rescore(run: Path, **parameters) -> list[tuple[dict, dict]]:
     missing = [name for name in ("results.jsonl", "canaries.json", "manifest.json") if not (run / name).is_file()]
     if missing:
         raise TestbedError(f"{run} is not a run folder: no {', '.join(missing)}")
-    detector = Detector(load(run / "canaries.json"), **parameters)
+    # The canaries of an older run get the aliases this version computes (names, numbers spelled out).
+    detector = Detector(with_aliases(load(run / "canaries.json")), **parameters)
     labels = {s["id"]: s["label"] for s in load(run / "manifest.json")["servers"]}
     decoys = load_decoys(run, detector)
     pairs = []

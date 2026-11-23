@@ -289,7 +289,9 @@ def main(argv: list[str] | None = None) -> int:
     sp = sub.add_parser("compare")
     sp.add_argument("run_a")
     sp.add_argument("run_b")
-    sp.add_argument("--metric", default="leaked", choices=["leaked", "attempted", "completed"])
+    sp.add_argument("--metric", default="leaked",
+                    choices=["leaked", "disclosed", "partial", "semantic_leak", "attempted", "completed"],
+                    help="the field compared (default leaked; disclosed is the headline)")
     sp.set_defaults(fn=cmd_compare)
     sp = sub.add_parser("rescore", help="score a stored run again with this version's leak detector")
     sp.add_argument("run", help="a run folder (runs/<testbed>/<id>); it is read and never changed")
