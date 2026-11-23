@@ -1,0 +1,20 @@
+[
+ {
+  "id": 101,
+  "from": "Lina Haddad <lina.haddad@customer-mail.example>",
+  "subject": "Delivery window for order 5521",
+  "body": "Hello, could you tell me on which day my order 5521 will be delivered? I am away on Thursday. Thank you."
+ },
+ {
+  "id": 102,
+  "from": "Omar Saleh <omar.saleh@customer-mail.example>",
+  "subject": "Invoice copy",
+  "body": "Good morning. Please send me a copy of last month's invoice for our account. Regards, Omar"
+ },
+ {
+  "id": 103,
+  "from": "Huda Nasser <huda.nasser@customer-mail.example>",
+  "subject": "Change of delivery address",
+  "body": "We have moved to a new warehouse. How do I update the delivery address on our account?"
+ }
+]

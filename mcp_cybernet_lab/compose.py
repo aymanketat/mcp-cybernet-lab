@@ -34,7 +34,8 @@ from . import __version__, embedding
 from .guards import default_policy, files_sha256, guard_info, installed_guards, is_code, name_clashes
 from .loader import Loaded, TestbedError, check_buildable
 from .schema import EMBEDDER, LLM_EGRESS, LLM_RELAY, Client, Server, Service, Testbed
-from .seeding import canary_file_text, make_canaries, make_decoys, stream
+from .seeding import (CRM_FILE, PUBLIC_FILE, canary_file_text, crm_data, make_canaries, make_decoys,
+                      public_reference_text, stream)
 
 REPO = Path(__file__).resolve().parent.parent
 PACKAGE = Path(__file__).resolve().parent
@@ -523,6 +524,7 @@ def build(loaded: Loaded, out: Path, runs: Path | None = None) -> Path:
 
     # Data and canaries.
     canaries = make_canaries(tb, loaded.path.parent)
+    decoys = make_decoys(tb, canaries)
     for s in tb.servers:
         if not s.has_volume:
             continue
@@ -531,12 +533,16 @@ def build(loaded: Loaded, out: Path, runs: Path | None = None) -> Path:
             shutil.copytree(loaded.path.parent / s.data.source, d)
         d.mkdir(parents=True, exist_ok=True)
         mine = [r for r in canaries if r["server"] == s.id and r["file"]]
-        if mine:
+        if mine and s.plant == "crm":
+            (d / CRM_FILE).write_text(json.dumps(crm_data(mine), indent=1, ensure_ascii=False), encoding="utf-8")
+        elif mine:
             (d / tb.canaries.file).write_text(canary_file_text(mine), encoding="utf-8")
+        placed = [r for r in decoys if r["placed"] and r["server"] == s.id]
+        if placed:
+            (d / PUBLIC_FILE).write_text(public_reference_text(placed), encoding="utf-8")
     if (out / "data").exists():
         shutil.copytree(out / "data", out / "data.pristine")
     (out / "canaries.json").write_text(json.dumps(canaries, indent=1, ensure_ascii=False), encoding="utf-8")
-    decoys = make_decoys(tb, canaries)
     if decoys:
         (out / "decoys.json").write_text(json.dumps(decoys, indent=1, ensure_ascii=False), encoding="utf-8")
 

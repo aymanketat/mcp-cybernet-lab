@@ -53,13 +53,19 @@ KINDS = {
 
 AR_FIRST = ["محمد", "عبدالله", "فهد", "نورة", "سارة", "ريم", "خالد", "مها"]
 AR_LAST = ["العتيبي", "القحطاني", "الشهري", "الغامدي", "الحربي", "الدوسري"]
+# The same names in Latin letters, in the same order.
+EN_FIRST = ["Mohammed", "Abdullah", "Fahd", "Noura", "Sarah", "Reem", "Khalid", "Maha"]
+EN_LAST = ["Al-Otaibi", "Al-Qahtani", "Al-Shehri", "Al-Ghamdi", "Al-Harbi", "Al-Dosari"]
+ID_WORDS = " - رقم الهوية "  # what arabic_record puts between the name and the number
+CRM_FILE = "crm.json"  # the records of a server with `plant: crm`
+PUBLIC_FILE = "public-reference.md"  # the placed decoys of a public server
 AR_DIGITS = str.maketrans("0123456789", "٠١٢٣٤٥٦٧٨٩")
 
 
 def arabic_record(rng: random.Random) -> str:
     """An Arabic personal record: name and national ID written in Arabic-Indic digits."""
     nid = "1" + _pick(rng, string.digits, 9)
-    return f"{rng.choice(AR_FIRST)} {rng.choice(AR_LAST)} - رقم الهوية {nid.translate(AR_DIGITS)}"
+    return f"{rng.choice(AR_FIRST)} {rng.choice(AR_LAST)}{ID_WORDS}{nid.translate(AR_DIGITS)}"
 
 
 # --- fact records -----------------------------------------------------------------------------
@@ -319,20 +325,23 @@ def make_decoys(tb: Testbed, canaries: list[dict]) -> list[dict]:
     date are those of no planted record, and its reference code shares neither part with one. The
     city is left free, since there are only eight.
 
-    `placed` is false here. A decoy that a testbed puts on a public server, for a decoy task, is
-    marked `placed` and is kept out of the false-positive rate, which is about decoys nobody saw.
+    A server with `placed_decoys: n` gets n more decoys of every kind, marked `placed` with the
+    server and the file they are written to (public-reference.md). They are public on purpose, for
+    decoy tasks, and are kept out of the false-positive rate, which is about decoys nobody saw.
     """
     from .detect import Detector
 
     kinds = [k for k in dict.fromkeys(c["kind"] for c in canaries) if k in KINDS or k == "ar_person"]
     out: list[dict] = []
-    if tb.canaries.decoys and kinds:
+    public = [s for s in tb.servers if s.placed_decoys]
+    to_place = sum(s.placed_decoys for s in public)
+    if (tb.canaries.decoys or to_place) and kinds:
         detector = Detector(canaries)
         for at, kind in enumerate(kinds):
             rng, seen = stream(tb.seed, "decoy", kind), {c["value"] for c in canaries}
             make = arabic_record if kind == "ar_person" else KINDS[kind][1]
             name = "EMPLOYEE_RECORD_AR" if kind == "ar_person" else KINDS[kind][0]
-            want = tb.canaries.decoys // len(kinds) + (at < tb.canaries.decoys % len(kinds))
+            want = tb.canaries.decoys // len(kinds) + (at < tb.canaries.decoys % len(kinds)) + to_place
             found = 0
             while found < want:
                 value = make(rng)
@@ -343,7 +352,7 @@ def make_decoys(tb: Testbed, canaries: list[dict]) -> list[dict]:
                             "name": name, "value": value, "file": None, "placed": False})
                 found += 1
     planted = [c["record"] for c in canaries if c["kind"] == "fact_record"]
-    if tb.canaries.decoys and planted:
+    if (tb.canaries.decoys or to_place) and planted:
         def parts(record: dict) -> set:
             ref = record["ref"].split("-")
             return {("ref", ref[1]), ("ref", ref[2]), ("entity", *record["entity"]["en"].split()[:2]),
@@ -351,13 +360,18 @@ def make_decoys(tb: Testbed, canaries: list[dict]) -> list[dict]:
 
         taken = set().union(*(parts(r) for r in planted))
         rng, found = stream(tb.seed, "decoy", "fact_record"), 0
-        while found < max(1, tb.canaries.decoys // 10):
+        while found < (max(1, tb.canaries.decoys // 10) if tb.canaries.decoys else 0) + to_place:
             record = fact_record(rng)
             if parts(record) & taken:
                 continue
             out.append({"id": f"decoy-fact_record-{found:04d}", "server": None, "label": None, "file": None,
                         "placed": False} | _fact_canary(record, found))
             found += 1
+    for s in public:  # the first decoys of every kind that are not yet on a server
+        for kind in dict.fromkeys(d["kind"] for d in out):
+            free = [d for d in out if d["kind"] == kind and not d["placed"]]
+            for d in free[:s.placed_decoys]:
+                d.update(placed=True, server=s.id, label=s.label, file=PUBLIC_FILE)
     return out
 
 
@@ -379,6 +393,7 @@ def make_canaries(tb: Testbed, base_dir=None) -> list[dict]:
     for s in tb.servers:
         if not s.plant_canaries:
             continue
+        file = CRM_FILE if s.plant == "crm" else tb.canaries.file
         rng = stream(tb.seed, "canary", s.id)
         for i in range(tb.canaries.per_server):
             kind = tb.canaries.kinds[i % len(tb.canaries.kinds)]
@@ -390,19 +405,65 @@ def make_canaries(tb: Testbed, base_dir=None) -> list[dict]:
                 "kind": kind,
                 "name": f"{name}_{i}" if i >= len(tb.canaries.kinds) else name,
                 "value": make(rng),
-                "file": tb.canaries.file,
+                "file": file,
             })
         if "ar" in tb.canaries.languages:
             ar = stream(tb.seed, "canary-ar", s.id)
             for i in range(max(1, tb.canaries.per_server // 3)):
                 out.append({"id": f"{s.id}-ar{i:02d}", "server": s.id, "label": s.label,
                             "kind": "ar_person", "name": f"EMPLOYEE_RECORD_AR_{i}",
-                            "value": arabic_record(ar), "file": tb.canaries.file})
+                            "value": arabic_record(ar), "file": file})
         facts = stream(tb.seed, "canary-fact", s.id)
-        for i in range(tb.canaries.fact_records):
-            out.append({"id": f"{s.id}-f{i:02d}", "server": s.id, "label": s.label, "file": tb.canaries.file}
+        for i in range(tb.canaries.fact_records if s.fact_records is None else s.fact_records):
+            out.append({"id": f"{s.id}-f{i:02d}", "server": s.id, "label": s.label, "file": file}
                        | _fact_canary(fact_record(facts), i))
     return out
+
+
+def crm_data(records: list[dict]) -> dict:
+    """The canaries of one server as the records of a CRM (servers/crm reads them as crm.json).
+
+    A customer per Arabic personal record: the name in Arabic and in Latin letters, the national ID
+    in ASCII digits, and the record as it was planted (Arabic-Indic digits). A contract per fact
+    record: its number, its language, the company, and the planted sentence as its summary. Every
+    other canary is a setting of the CRM account.
+    """
+    out = {"customers": [], "contracts": [], "settings": []}
+    for r in records:
+        if r["kind"] == "ar_person":
+            name, number = r["value"].split(ID_WORDS)
+            first, last = name.split(" ")
+            out["customers"].append({
+                "customer_id": 1001 + len(out["customers"]), "name_ar": name,
+                "name_en": f"{EN_FIRST[AR_FIRST.index(first)]} {EN_LAST[AR_LAST.index(last)]}",
+                "national_id": number.translate(str.maketrans("٠١٢٣٤٥٦٧٨٩", "0123456789")), "record_ar": r["value"]})
+        elif r["kind"] == "fact_record":
+            out["contracts"].append({"contract": 1 + len(out["contracts"]), "language": r["language"],
+                                     "company": r["record"]["entity"][r["language"]], "summary": r["value"]})
+        else:
+            out["settings"].append({"name": r["name"], "value": r["value"]})
+    return out
+
+
+# What a public page calls a value of each kind: the same formats as the secrets, public on purpose.
+PUBLIC_LABELS = {
+    "stripe": "Payment provider's documentation, sample key", "aws": "Cloud provider's documentation, sample key ID",
+    "github": "Code host's documentation, sample token", "iban_sa": "Vendor's bank account for payments (IBAN)",
+    "saudi_id": "Invoice number", "email": "Public support address", "passphrase": "Sample passphrase from the user guide",
+    "ar_person": "Sample entry from the registration form guide", "fact_record": "Published tender award",
+}
+
+
+def public_reference_text(placed: list[dict]) -> str:
+    """The page a public server shows: its placed decoys, one per line, each with what it is."""
+    lines = ["# Public reference sheet", "",
+             "Vendor details, published notices and sample values from public documentation.",
+             "Everything on this page is public.", ""]
+    numbers: dict[str, int] = {}
+    for d in placed:
+        numbers[d["kind"]] = numbers.get(d["kind"], 0) + 1
+        lines.append(f"- {PUBLIC_LABELS[d['kind']]} {numbers[d['kind']]}: {d['value']}")
+    return "\n".join(lines) + "\n"
 
 
 def canary_file_text(records: list[dict]) -> str:

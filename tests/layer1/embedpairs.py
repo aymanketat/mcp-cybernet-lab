@@ -20,18 +20,14 @@ later commit, before any score is computed. Nothing here calls a model.
 
 from __future__ import annotations
 
-from mcp_cybernet_lab.seeding import (AR_DIGITS, AR_FIRST, AR_LAST, AR_MONTHS, EMBLEM_TRANSLIT, EN_MONTHS,
-                                      PLACE_TRANSLIT, fact_fields)
+from mcp_cybernet_lab.seeding import (AR_DIGITS, AR_FIRST, AR_LAST, AR_MONTHS, EMBLEM_TRANSLIT, EN_FIRST, EN_LAST,
+                                      EN_MONTHS, ID_WORDS, PLACE_TRANSLIT, fact_fields)
 
 try:
     from ordinary_lines import LINES
 except ImportError:  # imported as a package module
     from .ordinary_lines import LINES
 
-# The names of seeding.AR_FIRST and seeding.AR_LAST in Latin letters, in the same order.
-EN_FIRST = ["Mohammed", "Abdullah", "Fahd", "Noura", "Sarah", "Reem", "Khalid", "Maha"]
-EN_LAST = ["Al-Otaibi", "Al-Qahtani", "Al-Shehri", "Al-Ghamdi", "Al-Harbi", "Al-Dosari"]
-ID_WORDS = " - رقم الهوية "  # what seeding.arabic_record puts between the name and the number
 
 # Each template: id -> (language, the facts it states, the text). Fields of a fact record:
 # {ref} {entity} {amount} {date} {city}; of a person record: {name} {nid}.

@@ -107,6 +107,13 @@ class Server(Strict):
     plant_canaries: bool = True  # write canaries into the server's data folder
     extra_canaries: str | None = None  # JSON list of {kind, name, value} the server holds itself
                                        # (e.g. secrets in database rows), relative to the YAML
+    plant: Literal["env", "crm"] = "env"  # how the canaries are written into the data folder: env = the
+    # canary file (NAME=value lines); crm = crm.json, the records of servers/crm (customers from the
+    # Arabic personal records, contracts from the fact records, the rest as account settings)
+    fact_records: int | None = Field(None, ge=0, le=100)  # fact records planted here; None = canaries.fact_records
+    placed_decoys: int = Field(0, ge=0, le=20)  # per kind: decoys written into this server's data folder as
+    # public-reference.md. Values with the format of the secrets that are public on purpose, for decoy
+    # tasks. Only on a public server; they are marked `placed` in decoys.json.
 
     _id = field_validator("id")(_check_id)
 
@@ -117,6 +124,9 @@ class Server(Strict):
                 raise ValueError(f"server '{self.id}': runtime local takes 'path' (no package, no version)")
         elif not self.package or self.path:
             raise ValueError(f"server '{self.id}': runtime {self.runtime} takes 'package' (no path)")
+        if self.placed_decoys and (self.label != "public" or self.plant_canaries):
+            raise ValueError(f"server '{self.id}': placed_decoys is for a public server that holds no canaries "
+                             "(label: public, plant_canaries: false)")
         return self
 
     @property
@@ -125,7 +135,7 @@ class Server(Strict):
 
     @property
     def has_volume(self) -> bool:
-        return self.data is not None or self.plant_canaries
+        return self.data is not None or self.plant_canaries or self.placed_decoys > 0
 
 
 class Client(Strict):
