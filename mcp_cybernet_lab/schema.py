@@ -17,7 +17,8 @@ from urllib.parse import urlsplit
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 1  # what a testbed file has when it names no version
+SCHEMA_VERSIONS = (1, 2)  # 2: a server may label single tools (`tool_labels`)
 SERVERS_DIR = Path(__file__).resolve().parent.parent / "servers"  # custom servers shipped with the lab
 ID_RE = re.compile(r"^[a-z][a-z0-9-]{0,30}$")  # usable as a Docker service and DNS name
 LLM_ENDPOINTS = {  # where each provider's API lives; the agent and the transformer hold the same table
@@ -101,6 +102,10 @@ class Server(Strict):
     env: dict[str, str] = {}
     domain: str | None = None
     label: Literal["private", "public", "mixed"] = "private"
+    tool_labels: dict[str, Literal["public"]] = {}  # tool name -> label, for a tool whose calls go somewhere
+    # else than the server's label says: a helpdesk is mixed, a reply to the customer leaves the company.
+    # It changes how a call TO that tool is scored and guarded; what the tool returns is treated by the
+    # server's label as before. Only `public` can be given. Needs `version: 2` in the testbed file.
     transport: Literal["stdio", "http"] | None = None  # None = defaults.transport
     network: NetworkConditions | None = None  # None = defaults.network
     data: ServerData | None = None
@@ -261,9 +266,17 @@ class Testbed(Strict):
     @field_validator("version")
     @classmethod
     def _version(cls, v: int) -> int:
-        if v != SCHEMA_VERSION:
-            raise ValueError(f"schema version {v} not supported (this mcp-cybernet-lab reads version {SCHEMA_VERSION})")
+        if v not in SCHEMA_VERSIONS:
+            raise ValueError(f"schema version {v} not supported (this mcp-cybernet-lab reads version "
+                             f"{' and '.join(map(str, SCHEMA_VERSIONS))})")
         return v
+
+    @model_validator(mode="after")
+    def _tool_labels(self) -> "Testbed":
+        labelled = [s.id for s in self.servers if s.tool_labels]
+        if labelled and self.version < 2:
+            raise ValueError(f"server '{labelled[0]}': tool_labels needs `version: 2` in the testbed file")
+        return self
 
     @model_validator(mode="after")
     def _resolve_and_cross_check(self) -> "Testbed":

@@ -3,7 +3,7 @@
 # first policy), and the agent reaches its model through the LLM relay (llm.egress, set by default
 # when a gateway is configured). Servers, data, canaries and decoys are those of enterprise-v2.yaml.
 testbed: enterprise-v2-guarded
-version: 1
+version: 2
 seed: 0
 
 defaults:
@@ -52,6 +52,7 @@ servers:
     args: ["--tickets", "/data/ticketing/tickets.json", "--replies", "/data/ticketing/replies.jsonl"]
     domain: public
     label: mixed
+    tool_labels: { reply_ticket: public }   # a reply reaches the customer who wrote the ticket: it leaves the company
     plant_canaries: false
     data: { from: data/enterprise-v2-tickets }
   - id: partners

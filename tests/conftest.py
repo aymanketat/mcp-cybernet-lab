@@ -70,7 +70,8 @@ def v2(tmp_path_factory):
     finally:
         compose.make_decoys, compose.server_wheels = kept
     manifest = json.loads((out / "manifest.json").read_text(encoding="utf-8"))
-    return {"out": out, "manifest": manifest, "labels": {s["id"]: s["label"] for s in manifest["servers"]},
+    from mcp_cybernet_lab.guards import labels_of
+    return {"out": out, "manifest": manifest, "labels": labels_of(manifest["servers"]),
             "canaries": json.loads((out / "canaries.json").read_text(encoding="utf-8")),
             "decoys": json.loads((out / "decoys.json").read_text(encoding="utf-8")),
             "sheet": (out / "data" / "partners" / "public-reference.md").read_text(encoding="utf-8")}

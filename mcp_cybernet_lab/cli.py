@@ -105,6 +105,18 @@ def cmd_up(args) -> int:
     return compose(out, "up", "-d", "--build", "--wait" if args.wait else "--quiet-pull").returncode
 
 
+def unknown_tool_labels(tb, results: list[dict]) -> list[tuple[str, str]]:
+    """(server, what is wrong) for every tool a testbed labels that its server does not offer.
+    results: the smoke lines, each with the server it reached and the tools that server listed. A
+    server no client reached is not judged here: its connection has failed already."""
+    offered: dict[str, set] = {}
+    for res in results:
+        if res.get("ok"):
+            offered.setdefault(res["server"], set()).update(res.get("tools") or [])
+    return [(s.id, f"tool_labels names '{tool}', and the server has no such tool (it has: {', '.join(sorted(offered[s.id]))})")
+            for s in tb.servers for tool in s.tool_labels if s.id in offered and tool not in offered[s.id]]
+
+
 def cmd_smoke(args) -> int:
     loaded, out = loaded_and_build(args)
     tb = loaded.testbed
@@ -125,6 +137,13 @@ def cmd_smoke(args) -> int:
             detail = (f"{res['server_info']} {res['version']} — {res['transport']}, {len(res['tools'])} tools, "
                       f"{res['ms']} ms" if res["ok"] else res.get("error"))
             print(f"{'ok  ' if res['ok'] else 'FAIL'} {c.id} -> {res['server']}: {detail}")
+
+    # A label for a tool the server does not have would score a secret sent to the real tool as
+    # nothing, silently: a misspelled name fails here.
+    for server, error in unknown_tool_labels(tb, results):
+        print(f"FAIL {server}: {error}")
+        failed += 1
+        results.append({"ok": False, "server": server, "client": None, "error": error})
 
     # Record the versions actually installed, next to what the YAML asked for.
     installed = {}

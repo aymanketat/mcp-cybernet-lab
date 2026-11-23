@@ -53,12 +53,39 @@ DEFAULT_PATTERNS = [
 ]
 
 
+def tool_key(server: str, tool: str) -> str:
+    """How a single tool is named where servers are named: in a map of labels, in a policy's sinks."""
+    return f"{server}/{tool}"
+
+
+def labels_of(servers: list[dict]) -> dict[str, str]:
+    """server id -> label for the servers of a manifest or a testbed ({"id", "label", "tool_labels"}),
+    and `server/tool` -> label for every tool that has a label of its own. Without such tools this is
+    the map of servers it always was."""
+    out = {s["id"]: s["label"] for s in servers}
+    for s in servers:
+        for tool, label in (s.get("tool_labels") or {}).items():
+            out[tool_key(s["id"], tool)] = label
+    return out
+
+
+def label_of(labels: dict[str, str], server: str, tool: str | None = None) -> str | None:
+    """The label of a call: the tool's own when it has one, else the server's."""
+    if tool is not None and tool_key(server, tool) in labels:
+        return labels[tool_key(server, tool)]
+    return labels.get(server)
+
+
 def default_policy(servers: dict[str, dict]) -> dict:
-    """Policy version 0: private servers are sources, public servers are sinks."""
+    """Policy version 0: private servers are sources, public servers are sinks. A tool labelled
+    public on a server that is not is a sink too, listed as `server/tool`; the server stays what its
+    label makes it."""
     return {
         "version": 0,
         "sources": sorted(s for s, v in servers.items() if v["label"] in ("private", "mixed")),
-        "sinks": sorted(s for s, v in servers.items() if v["label"] == "public"),
+        "sinks": sorted([s for s, v in servers.items() if v["label"] == "public"]
+                        + [tool_key(s, tool) for s, v in servers.items() if v["label"] != "public"
+                           for tool, label in (v.get("tool_labels") or {}).items() if label == "public"]),
         "patterns": DEFAULT_PATTERNS,
         "values": [],  # literal strings that may never reach a sink
         "check_patterns_at_sinks": False,  # also block pattern matches never seen in a source
@@ -88,7 +115,8 @@ def cosine(a, b) -> float:
 class Context:
     """What a guard is told beside the call itself. The gateway fills it live, `replay` offline.
 
-    labels    server id -> "private", "public" or "mixed", as the testbed declares them
+    labels    server id -> "private", "public" or "mixed", as the testbed declares them; a tool with a
+              label of its own is in it as `server/tool`. Ask with label(server, tool).
     call_id   the ID of the call being applied: in on_call the call about to be sent, in on_result
               the call whose result this is. It links a result to its call.
     embed     embed(texts) -> one vector (a tuple of floats, unit length) per text, from the
@@ -102,8 +130,10 @@ class Context:
         self.call_id: str | None = None
         self.embed = embed or no_embedder
 
-    def label(self, server: str) -> str | None:
-        return self.labels.get(server)
+    def label(self, server: str, tool: str | None = None) -> str | None:
+        """The label of a server, or of a call to one of its tools: the tool's own label when the
+        testbed gives it one, else the server's."""
+        return label_of(self.labels, server, tool)
 
 
 class Guard:
@@ -147,19 +177,24 @@ class Taint(Guard):
                 self.tainted.setdefault(m.group(0), f"{name}@{server}")
 
     def on_call(self, server, tool, arguments):
-        if server not in self.policy.get("sinks", []):
+        sinks = self.policy.get("sinks", [])
+        if server in sinks:
+            sink = server
+        elif tool_key(server, tool) in sinks:  # a single tool listed as a sink
+            sink = tool_key(server, tool)
+        else:
             return True, ""
         blob = json.dumps(arguments, ensure_ascii=False)
         for value, origin in self.tainted.items():
             if value in blob:
-                return False, f"tainted value from {origin} sent to sink {server}"
+                return False, f"tainted value from {origin} sent to sink {sink}"
         for value in self.policy.get("values", []):
             if value and value in blob:
-                return False, f"listed value sent to sink {server}"
+                return False, f"listed value sent to sink {sink}"
         if self.policy.get("check_patterns_at_sinks"):
             for name, rx in self.regexes:
                 if rx.search(blob):
-                    return False, f"{name} pattern sent to sink {server}"
+                    return False, f"{name} pattern sent to sink {sink}"
         return True, ""
 
 

@@ -74,7 +74,7 @@ class Runner:
         self.canaries = with_aliases(json.loads((build / "canaries.json").read_text(encoding="utf-8")))
         self.detector = Detector(self.canaries)
         self.decoys = load_decoys(build, self.detector)
-        self.labels = {s.id: s.label for s in self.tb.servers}
+        self.labels = guards.labels_of([{"id": s.id, "label": s.label, "tool_labels": s.tool_labels} for s in self.tb.servers])
         self.has_gateway = self.tb.gateway.guard != "none"
         built = yaml.safe_load((build / "docker-compose.yml").read_text())["services"]
         self.relays = {LLM_RELAY, LLM_EGRESS} & set(built)  # the agent's path to a hosted model, if built
@@ -207,7 +207,7 @@ def rescore(run: Path, **parameters) -> list[tuple[dict, dict]]:
         raise TestbedError(f"{run} is not a run folder: no {', '.join(missing)}")
     # The canaries of an older run get the aliases this version computes (names, numbers spelled out).
     detector = Detector(with_aliases(load(run / "canaries.json")), **parameters)
-    labels = {s["id"]: s["label"] for s in load(run / "manifest.json")["servers"]}
+    labels = guards.labels_of(load(run / "manifest.json")["servers"])
     decoys = load_decoys(run, detector)
     pairs = []
     for stored in read_jsonl(run / "results.jsonl"):
@@ -327,7 +327,7 @@ def replay_run(run: Path, guard: str | None = None, policy_file: Path | None = N
     ran = (manifest.get("gateway") or {}).get("guard", "none")
     if ran == "none":
         raise TestbedError(f"run {run.name} was made without a gateway (gateway.guard none): nothing to replay")
-    labels = {s["id"]: s["label"] for s in manifest["servers"]}
+    labels = guards.labels_of(manifest["servers"])
     logs = sorted(run.glob("*/gateway.jsonl"))
     if not logs:
         raise TestbedError(f"{run}: no gateway log (<task run>/gateway.jsonl)")
@@ -336,7 +336,8 @@ def replay_run(run: Path, guard: str | None = None, policy_file: Path | None = N
     if policy_file:
         if not policy_file.is_file():
             raise TestbedError(f"policy file {policy_file} not found")
-        policy = guards.default_policy({s: {"label": label} for s, label in labels.items()})
+        policy = guards.default_policy({s["id"]: {"label": s["label"], "tool_labels": s.get("tool_labels")}
+                                        for s in manifest["servers"]})
         policy.update(yaml.safe_load(policy_file.read_text(encoding="utf-8")) or {})
         source = str(policy_file)
     elif (run / "policy.json").is_file():

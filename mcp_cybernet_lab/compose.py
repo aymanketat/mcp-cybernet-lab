@@ -437,7 +437,8 @@ def embedder_service(tb: Testbed) -> dict:
 def gateway_service(tb: Testbed, runs: Path) -> dict:
     http = [s for s in tb.servers if s.transport == "http"]
     config = {"guard": tb.gateway.guard,
-              "servers": {s.id: {"label": s.label, "domain": s.domain} for s in http}}
+              "servers": {s.id: {"label": s.label, "domain": s.domain}
+                          | ({"tool_labels": s.tool_labels} if s.tool_labels else {}) for s in http}}
     spec = embedder_spec(tb)
     if spec:  # only then: without an embedder the gateway's configuration is what it was
         config["embedder"] = {"model": spec["model"], "revision": spec["revision"],
@@ -523,7 +524,7 @@ def _git_commit() -> str:
 
 def initial_policy(loaded: Loaded) -> dict:
     tb = loaded.testbed
-    servers = {s.id: {"label": s.label} for s in tb.servers}
+    servers = {s.id: {"label": s.label, "tool_labels": s.tool_labels} for s in tb.servers}
     policy = default_policy(servers)
     if tb.gateway.policy:
         f = loaded.path.parent / tb.gateway.policy
@@ -672,10 +673,16 @@ def build(loaded: Loaded, out: Path, runs: Path | None = None) -> Path:
                      "attack": s.env.get("MCL_ATTACK"), "transform": s.env.get("MCL_TRANSFORM")}
                     # A server with a lock: the hash of the lock and of every wheel its image installs.
                     | ({"locked": locked[s.id]} if s.id in locked else {})
+                    # A server that labels single tools: the map, so that a stored run is scored by it.
+                    | ({"tool_labels": s.tool_labels} if s.tool_labels else {})
                     for s in tb.servers],
         "services": [{"id": v.id, "image": v.image, "builtin": v.builtin, "domain": v.domain, "label": v.label}
                      for v in tb.services],
         "canaries": len(canaries),
+        # What a run of this build is scored against: decoy ids hold within one build only, so a run
+        # names its lists by their hashes.
+        "canaries_sha256": embedding.file_sha256(out / "canaries.json"),
+        "decoys_sha256": embedding.file_sha256(out / "decoys.json") if (out / "decoys.json").is_file() else None,
         "warnings": loaded.warnings,
     }
     (out / "manifest.json").write_text(json.dumps(manifest, indent=1, ensure_ascii=False))

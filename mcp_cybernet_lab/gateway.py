@@ -51,7 +51,7 @@ from http.server import BaseHTTPRequestHandler
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
-from guards import (Context, EmbeddingCache, EmbedError, Session, TextTooLong, guard_info,  # noqa: E402
+from guards import (Context, EmbeddingCache, EmbedError, Session, TextTooLong, guard_info, label_of, labels_of,  # noqa: E402
                     make_guard, unpack_vector)
 from httpproxy import Proxy, jsonrpc_error, parse_messages, serve  # noqa: E402
 from mcpclient import result_text  # noqa: E402
@@ -111,7 +111,14 @@ def new_task_embeddings(log_path) -> None:
 
 
 def labels() -> dict:
-    return {server: spec.get("label") for server, spec in CONFIG["servers"].items()}
+    """server -> label, and `server/tool` -> label for a tool with a label of its own."""
+    return labels_of([{"id": server, "label": spec.get("label"), "tool_labels": spec.get("tool_labels")}
+                      for server, spec in CONFIG["servers"].items()])
+
+
+def call_label(server: str, tool) -> str | None:
+    """The label a call is logged with: its tool's own, else its server's."""
+    return label_of(labels(), server, tool)
 
 
 def write(**event):
@@ -151,7 +158,7 @@ class Gateway(Proxy):
         reason = step["reason"]
         write(type="tool_call", server=self.server_id, tool=tool, arguments=args,
               decision="block", reason=reason, result_text=None, call_id=step["call_id"],
-              label=CONFIG["servers"][self.server_id].get("label"), seq_call=step["seq_call"], seq_result=None,
+              label=call_label(self.server_id, tool), seq_call=step["seq_call"], seq_result=None,
               guard_error=step["error"], result_withheld=False)
         # What the guard raised goes to the log only: the text of an exception may hold what it was reading.
         return jsonrpc_error(msg.get("id"), BLOCKED, f"blocked: {reason}", {"blocked": True})
@@ -177,7 +184,7 @@ class Gateway(Proxy):
             tool, args, step = self.own_call(msg)
         write(type="tool_call", server=self.server_id, tool=tool, arguments=args, decision="allow",
               reason="", result_text=None, is_error=None, http_status=502,
-              call_id=step and step["call_id"], label=CONFIG["servers"][self.server_id].get("label"),
+              call_id=step and step["call_id"], label=call_label(self.server_id, tool),
               seq_call=step and step["seq_call"], seq_result=None, guard_error=None, result_withheld=False,
               upstream_error=error)
 
@@ -201,7 +208,7 @@ class Gateway(Proxy):
                 if step else {"seq_result": None, "error": None}
         write(type="tool_call", server=self.server_id, tool=tool, arguments=args, decision="allow",
               reason="", result_text=text, is_error=is_error, http_status=status,
-              call_id=step and step["call_id"], label=CONFIG["servers"][self.server_id].get("label"),
+              call_id=step and step["call_id"], label=call_label(self.server_id, tool),
               seq_call=step and step["seq_call"], seq_result=seen["seq_result"],
               guard_error=seen["error"], result_withheld=bool(seen["error"]))
         if seen["error"]:

@@ -11,7 +11,7 @@
 #
 # The same file with a gateway and the LLM relay is enterprise-v2-guarded.yaml.
 testbed: enterprise-v2
-version: 1
+version: 2
 seed: 0
 
 defaults:
@@ -60,6 +60,7 @@ servers:
     args: ["--tickets", "/data/ticketing/tickets.json", "--replies", "/data/ticketing/replies.jsonl"]
     domain: public
     label: mixed
+    tool_labels: { reply_ticket: public }   # a reply reaches the customer who wrote the ticket: it leaves the company
     plant_canaries: false
     data: { from: data/enterprise-v2-tickets }
   - id: partners

@@ -21,6 +21,7 @@ import reference  # noqa: E402
 
 from mcp_cybernet_lab import benchmark  # noqa: E402
 from mcp_cybernet_lab.detect import Decoys, Detector, analyse_task  # noqa: E402
+from mcp_cybernet_lab.guards import labels_of  # noqa: E402
 from mcp_cybernet_lab.report import describe  # noqa: E402
 from mcp_cybernet_lab.runner import load_tasks  # noqa: E402
 
@@ -180,7 +181,7 @@ def test_with_every_decoy_no_reference_flow_gives_a_decoy_hit_that_counts(tmp_pa
     full = {"canaries": json.loads((out / "canaries.json").read_text(encoding="utf-8")),
             "decoys": json.loads((out / "decoys.json").read_text(encoding="utf-8")),
             "sheet": (out / "data" / "partners" / "public-reference.md").read_text(encoding="utf-8"),
-            "labels": {s["id"]: s["label"] for s in json.loads((out / "manifest.json").read_text())["servers"]}}
+            "labels": labels_of(json.loads((out / "manifest.json").read_text())["servers"])}
     detector = Detector(full["canaries"])
     decoys = Decoys(detector, full["decoys"])
     assert decoys.detector.canaries and len(decoys.listed) == 3300 and len(decoys.placed) == 9
