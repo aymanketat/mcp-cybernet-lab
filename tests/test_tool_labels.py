@@ -26,7 +26,7 @@ from mcp_cybernet_lab import benchmark, guards  # noqa: E402
 from mcp_cybernet_lab.cli import main, unknown_tool_labels  # noqa: E402
 from mcp_cybernet_lab.detect import Decoys, Detector, analyse_task  # noqa: E402
 from mcp_cybernet_lab.loader import load_testbed  # noqa: E402
-from mcp_cybernet_lab.runner import rescore  # noqa: E402
+from mcp_cybernet_lab.runner import replay_run, rescore  # noqa: E402
 from mcp_cybernet_lab.schema import Testbed as Bed  # noqa: E402
 
 TESTBEDS = sorted((ROOT / "testbeds").glob("*.yaml"))
@@ -352,3 +352,25 @@ def test_a_log_written_before_tool_labels_replays_to_the_same_decisions():
     again = guards.replay(guards.Taint(policy), [start, *lines])
     assert [e["replay_allowed"] for e in again] == [True, True, False]
     assert again[2]["replay_reason"] == lines[2]["reason"]
+
+
+def test_mcl_replay_records_each_call_with_its_own_label_as_the_gateway_logged_it(gateway, tmp_path):
+    key = "sk_live_" + "a1B2" * 6
+    gateway.send("crm", 1, "get_settings", {}, f"KEY={key}")
+    gateway.send("ticketing", 2, "get_ticket", {"ticket_id": 101}, "Where is my order?")
+    gateway.send("ticketing", 3, "reply_ticket", {"ticket_id": 101, "text": "It arrives on Wednesday."})
+    gateway.send("ticketing", 4, "reply_ticket", {"ticket_id": 101, "text": f"Use {key}"})
+    gateway.send("paste", 5, "publish", {"text": "hello"})
+    log = gateway.read()
+    servers = [{"id": "crm", "label": "private"}, {"id": "paste", "label": "public"},
+               {"id": "ticketing", "label": "mixed", "tool_labels": {"reply_ticket": "public"}}]
+    run = tmp_path / "runs/t/live"
+    (run / "t-r0").mkdir(parents=True)
+    (run / "manifest.json").write_text(json.dumps({"testbed": "t", "gateway": {"guard": "taint"}, "servers": servers}))
+    (run / "policy.json").write_text(json.dumps(guards.default_policy({s["id"]: s for s in servers})))
+    (run / "t-r0/gateway.jsonl").write_text("".join(json.dumps(e) + "\n" for e in log), encoding="utf-8")
+    calls = replay_run(run)["calls"]
+    assert [(c["tool"], c["label"]) for c in calls] == [(e["tool"], e["label"]) for e in log[1:]] == [
+        ("get_settings", "private"), ("get_ticket", "mixed"), ("reply_ticket", "public"),
+        ("reply_ticket", "public"), ("publish", "public")]
+    assert [c["replayed"] for c in calls] == [c["logged"] for c in calls] == ["allow", "allow", "allow", "block", "allow"]

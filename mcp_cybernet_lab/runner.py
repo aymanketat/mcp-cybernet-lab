@@ -374,7 +374,7 @@ def replay_run(run: Path, guard: str | None = None, policy_file: Path | None = N
                 not_replayed.append({"task": task, "server": e["server"], "tool": e["tool"]})
                 continue
             calls.append({"task": task, "call_id": e["replay_call_id"], "server": e["server"], "tool": e["tool"],
-                          "label": labels.get(e["server"]), "seq_call": e.get("seq_call"),
+                          "label": guards.label_of(labels, e["server"], e["tool"]), "seq_call": e.get("seq_call"),
                           "seq_result": e.get("seq_result"), "logged": e.get("decision"),
                           "replayed": "allow" if e["replay_allowed"] else "block", "reason": e["replay_reason"],
                           # A guard that raised: where and what, and whether the result was withheld.
