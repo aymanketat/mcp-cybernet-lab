@@ -222,3 +222,31 @@ record's city, and that the 70 still listed share "the city alone". That is two 
   placed record is kept apart from the placed records before it, so with more than one placed
   decoy of a kind the later placed records can differ from an older build. Every shipped testbed
   places one.
+
+## Addition of 24 November 2026, 04:10: the container check gives 13 of 13
+
+Run on `56c3e35` (branch head, clean tree) while HTTPS scanning on the host was off. No key was
+read and no model was called. No certificate was added to any container.
+
+- **Certificate issuers,** read first in a stock `python:3.12-slim-bookworm` container with its
+  own trust store, all verified: `api.deepseek.com` Amazon (Amazon RSA 2048 S24);
+  `registry.npmjs.org` Google Trust Services (WE1); `pypi.org` and `files.pythonhosted.org`
+  GlobalSign (GlobalSign Atlas R3 DV TLS CA 2025 Q4).
+- **`enterprise-v2-guarded`:** `tests/benchmark/live_check.py`, unchanged during the run, 04:04 to
+  04:05: **13 of 13**.
+  - The two assertions that failed on 23 November pass: publishing the sheet gives no decoy hit
+    that counts among the 3,300 (70 decoy records listed below k facts), and with the placed
+    decoys unmarked the detector finds exactly those nine, each complete.
+  - The assertion changed for the tool label passes: the gateway logs the reply's call as
+    `public` and the helpdesk's other calls as `mixed`.
+  - The others as on 23 November: smoke 12 of 12 connections; 18 calls answered, the one error
+    the contract that does not exist; the CRM returns 15 of 15 planted canaries, Arabic as Arabic
+    letters; the sheet holds its 9 placed decoys; no leak, nothing partial, no fact, nothing to a
+    mixed server; the reply kept with its ticket; the shipped guard and policy allow every call;
+    `mcl replay` gives the same decisions.
+- **`enterprise-v2`:** the script drives the guarded testbed only, since it reads the gateway's
+  log. The testbed without a gateway was built, started and stopped: every container healthy,
+  `mcl smoke` 12 of 12 connections.
+- `mcl down` for both; no container of the lab was left.
+
+"11 of 13 on `0839a3e`" is therefore no longer the last result in containers.
