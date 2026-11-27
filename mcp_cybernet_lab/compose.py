@@ -531,10 +531,27 @@ def initial_policy(loaded: Loaded) -> dict:
         if not f.is_file():
             raise TestbedError(f"gateway.policy '{tb.gateway.policy}' not found next to {loaded.path.name}")
         policy.update(yaml.safe_load(f.read_text()) or {})
-        unknown = [x for x in policy["sources"] + policy["sinks"] if x not in servers]
-        if unknown:
-            raise TestbedError(f"gateway.policy: unknown servers {unknown}")
+        problems = unknown_policy_names(policy["sources"] + policy["sinks"], set(servers))
+        if problems:
+            raise TestbedError("gateway.policy: " + "; ".join(problems))
     return policy
+
+
+def unknown_policy_names(names: list[str], servers: set[str]) -> list[str]:
+    """What is wrong with the sources and sinks of a policy, as sentences; none when all are known.
+
+    A name is known when it is a server of the testbed, or `server/tool` for a server of the testbed
+    (guards.tool_key: how a single tool is listed, and how the default policy lists a tool that is
+    labelled public on a server that is not). The tool's own name is not checked here: a build has no
+    list of the tools a server offers, which the server gives when it runs. A server id holds no
+    `/`, so the server is what stands before the first one.
+    """
+    plain = [n for n in names if "/" not in n and n not in servers]
+    tools = [n for n in names if "/" in n and n.split("/", 1)[0] not in servers]
+    empty = [n for n in names if "/" in n and n.split("/", 1)[0] in servers and not n.split("/", 1)[1]]
+    return ([f"unknown servers {plain}"] if plain else []) \
+        + ([f"tools on unknown servers {tools}"] if tools else []) \
+        + ([f"{empty} name no tool (a single tool is listed as server/tool)"] if empty else [])
 
 
 def build(loaded: Loaded, out: Path, runs: Path | None = None) -> Path:

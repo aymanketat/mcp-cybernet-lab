@@ -250,3 +250,7 @@ read and no model was called. No certificate was added to any container.
 - `mcl down` for both; no container of the lab was left.
 
 "11 of 13 on `0839a3e`" is therefore no longer the last result in containers.
+
+*Line added on 27 November 2026.* The heading of this addition says 04:10. It was written after
+the check of 04:04 to 04:05, committed at 04:07:55 (+03:00, `c80f4e9`) and pushed in the same
+minute, so 04:10 is no time at which anything happened. The heading is left as it was pushed.
