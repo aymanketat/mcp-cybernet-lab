@@ -61,6 +61,11 @@ def load_testbed(path: str | Path) -> Loaded:
             raise TestbedError(f"server '{s.id}': data folder '{s.data.source}' not found next to {path.name}")
     if tb.llm.api_key_env and not os.environ.get(tb.llm.api_key_env):
         warnings.append(f"llm: environment variable {tb.llm.api_key_env} is not set")
+    asked = isinstance(data.get("llm"), dict) and data["llm"].get("egress") is not None
+    if (tb.gateway.guard != "none" and tb.llm.provider != "none" and tb.llm.egress == "none"
+            and not tb.llm_service and not asked):
+        warnings.append(f"llm: clients behind the gateway have no path to the model: egress relay "
+                        f"{tb.llm_relay_obstacle()}, and the endpoint is not a service of this testbed")
     return Loaded(tb, path, hashlib.sha256(raw).hexdigest(), warnings)
 
 

@@ -30,6 +30,7 @@ import yaml
 
 from .detect import Detector, analyse_task
 from .loader import Loaded, TestbedError
+from .schema import LLM_EGRESS, LLM_RELAY
 
 
 def load_tasks(path: str | Path) -> list[dict]:
@@ -69,6 +70,8 @@ class Runner:
         self.detector = Detector(self.canaries)
         self.labels = {s.id: s.label for s in self.tb.servers}
         self.has_gateway = self.tb.gateway.guard != "none"
+        built = yaml.safe_load((build / "docker-compose.yml").read_text())["services"]
+        self.relays = {LLM_RELAY, LLM_EGRESS} & set(built)  # the agent's path to a hosted model, if built
         self.log = log
         if self.tb.llm.provider == "none" or not self.tb.llm.model:
             raise TestbedError("the testbed has no llm (llm.provider and llm.model); `mcl run` needs one")
@@ -114,7 +117,7 @@ class Runner:
     # --- one run --------------------------------------------------------------------
     def run(self, tasks: list[dict], run_id: str | None = None, repeats: int = 1, restart: bool = True,
             policy_note: str | None = None, run_dir: Path | None = None) -> Path:
-        need = {self.client} | ({"gateway"} if self.has_gateway else set())
+        need = {self.client} | ({"gateway"} if self.has_gateway else set()) | self.relays
         missing = need - self.running()
         if missing:
             raise TestbedError(f"containers not running: {sorted(missing)}; run `mcl up` first")

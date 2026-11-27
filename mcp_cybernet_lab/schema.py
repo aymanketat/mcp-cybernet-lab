@@ -9,15 +9,24 @@ schema so that testbed files can be written now, but `build` refuses them until 
 
 from __future__ import annotations
 
+import ipaddress
 import re
 from pathlib import Path
 from typing import Literal
+from urllib.parse import urlsplit
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 SCHEMA_VERSION = 1
 SERVERS_DIR = Path(__file__).resolve().parent.parent / "servers"  # custom servers shipped with the lab
 ID_RE = re.compile(r"^[a-z][a-z0-9-]{0,30}$")  # usable as a Docker service and DNS name
+LLM_ENDPOINTS = {  # where each provider's API lives; the agent and the transformer hold the same table
+    "openai": "https://api.openai.com/v1",
+    "deepseek": "https://api.deepseek.com",
+    "anthropic": "https://api.anthropic.com/v1",
+    "ollama": "http://host.docker.internal:11434/v1",
+}
+LLM_RELAY, LLM_EGRESS = "llm-relay", "llm-egress"  # the two containers of `llm.egress: relay`
 
 
 class Strict(BaseModel):
@@ -64,6 +73,15 @@ class LLM(Strict):
     temperature: float = Field(0.0, ge=0.0, le=2.0)
     max_steps: int = Field(12, ge=1, le=100)  # tool-call rounds before the agent must answer
     api_key_env: str | None = None  # name of a host environment variable; never the key itself
+    egress: Literal["relay", "none"] | None = None  # how clients behind a gateway reach the model.
+    # relay = through the llm-relay containers: TCP to the endpoint's host on port 443 only, TLS end
+    # to end (see llmrelay.py). none = no relay. Not set = relay when a gateway is configured and
+    # the endpoint is a public HTTPS host, else none; validation fills in the value.
+
+    @property
+    def endpoint(self) -> str | None:
+        """The base URL the agent calls: base_url, else the provider's own."""
+        return self.base_url or LLM_ENDPOINTS.get(self.provider)
 
 
 class ServerData(Strict):
@@ -222,6 +240,11 @@ class Testbed(Strict):
     @model_validator(mode="after")
     def _resolve_and_cross_check(self) -> "Testbed":
         self._expand_attacks_and_transforms()
+        obstacle = self.llm_relay_obstacle()
+        if self.llm.egress is None:
+            self.llm.egress = "none" if obstacle else "relay"
+        elif self.llm.egress == "relay" and obstacle:
+            raise ValueError(f"llm: egress relay {obstacle}")
         # Apply defaults, so the rest of the code never looks at `defaults`.
         for s in self.servers:
             if s.transport is None:
@@ -284,3 +307,47 @@ class Testbed(Strict):
 
     def server(self, sid: str) -> Server:
         return next(s for s in self.servers if s.id == sid)
+
+    def _llm_url(self):
+        try:
+            url = urlsplit(self.llm.endpoint or "")
+            return url.scheme, url.hostname, url.port
+        except ValueError:  # e.g. a port that is not a number
+            return "", None, None
+
+    @property
+    def llm_service(self) -> str | None:
+        """Id of the testbed service that hosts the model (llm.base_url points at it), if any.
+
+        With a gateway, `build` attaches that service to the gateway network as well, so the
+        clients behind the gateway can reach their model (vllm, ollama: a local model server).
+        """
+        host = self._llm_url()[1]
+        return host if host in {v.id for v in self.services} else None
+
+    def llm_relay_obstacle(self) -> str | None:
+        """Why `llm.egress: relay` cannot be built for this testbed; None if it can.
+
+        Worded to follow "llm: egress relay ...". The relay is for a hosted model behind a
+        gateway: it forwards TLS to one public host, on port 443.
+        """
+        scheme, host, port = self._llm_url()
+        try:
+            named = not ipaddress.ip_address(host or "")
+        except ValueError:
+            named = bool(host)
+        taken = {LLM_RELAY, LLM_EGRESS} & {x.id for x in [*self.domains, *self.servers, *self.clients, *self.services]}
+        if self.gateway.guard == "none":
+            return "needs a gateway (without one, clients sit on the domain networks)"
+        if self.llm.provider == "none" or not host:
+            return "needs an llm endpoint (llm.provider, or llm.base_url)"
+        if self.llm_service:
+            return (f"is for a hosted model; '{self.llm_service}' is a service of this testbed "
+                    "(it is attached to the gateway network instead)")
+        if scheme != "https" or (port or 443) != 443 or not named:
+            return f"needs an HTTPS endpoint with a host name, on port 443 (the endpoint is {self.llm.endpoint})"
+        if not any(d.internet for d in self.domains):
+            return "needs a domain with `internet: true` (the relay's way out)"
+        if taken:
+            return f"needs the ids {sorted(taken)} for its own containers"
+        return None

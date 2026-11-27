@@ -58,6 +58,7 @@ gateway and offline when replaying logs. Each demo below is run twice: once with
 ```bash
 mcl build testbeds/enterprise-attacks.yaml
 mcl up --wait testbeds/enterprise-attacks.yaml
+mcl check-isolation testbeds/enterprise-attacks.yaml   # the agent reaches its model and the gateway, nothing else
 # needs an LLM endpoint: set the key named by the testbed's llm.api_key_env (DEEPSEEK_API_KEY)
 mcl run testbeds/enterprise-attacks.yaml --tasks tasks/attacks.yaml --run-id guarded
 mcl report runs/enterprise-attacks/guarded

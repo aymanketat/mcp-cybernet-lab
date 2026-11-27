@@ -19,6 +19,7 @@ instead:
 - per-domain authentication (bearer token) can be required;
 - network delay and packet loss can be set per server;
 - an optional gateway logs every tool call and can block it with a guard;
+- behind a gateway, a client's one other connection is a relay to its model: one host, TLS end to end;
 - secret **canaries** are planted in the servers' data, so a leak is detected deterministically, without an LLM judge.
 
 The same YAML can also describe the **local** setup used in the literature, so results on the two
@@ -162,6 +163,33 @@ mcl compare runs/A runs/B                                                    # p
 
 `mcl run` needs an OpenAI-compatible endpoint; set the key named by the testbed's `llm.api_key_env`.
 
+## Behind a gateway: how the agent reaches its model
+
+With a gateway, every client sits on the internal network `net-gateway`: it reaches the gateway and
+has no route out. So that its agent can still call the model, `llm.egress` sets the one extra path:
+
+| The model | `llm.egress` | What `mcl build` adds |
+|---|---|---|
+| hosted (`openai`, `deepseek`, `anthropic`, or a `base_url` on HTTPS port 443) | `relay` (the default behind a gateway) | two containers, `llm-relay` and `llm-egress` |
+| a service of the testbed (`base_url: http://<service id>:…`, e.g. vLLM or Ollama under `services:`) | `none` | that service joins `net-gateway` |
+| anything else, or no gateway | `none` | nothing |
+
+`llm-relay` carries the provider's host name as an alias on `net-gateway`, so the agent's HTTPS request
+lands on it; it forwards to `llm-egress`, which sits outside `net-gateway` and connects to the provider.
+The pair copies TCP to that one host on port 443 and accepts only TLS sessions that name it. TLS is
+not terminated: the agent verifies the provider's certificate, and the API key stays inside that
+session. The relay containers hold no key, mount no volume, and log connection counts and byte totals
+only ([`llmrelay.py`](mcp_cybernet_lab/llmrelay.py)). Set `llm.egress: none` to build without them.
+
+```bash
+mcl check-isolation testbeds/enterprise-guarded.yaml   # after `up`: the client reaches its model and the gateway,
+                                                       # and nothing else, by name or by address (spends no tokens)
+mcl check-coverage  runs/enterprise-guarded/<id>       # after `run`: every tool call of the agent is in the gateway log
+```
+
+Both exit with status 1 when a check fails. Details and measurements:
+[`docs/2026-11-22-0035-guarded-llm-egress.md`](docs/2026-11-22-0035-guarded-llm-egress.md).
+
 ## What `build` writes
 
 ```
@@ -188,7 +216,7 @@ Each `local`/`network` pair differs only in its topology lines and plants the sa
 ## Tests
 
 ```bash
-pytest -q        # schema, canaries, generated compose, guard and detector; no Docker needed
+pytest -q        # schema, canaries, generated compose, guard, detector and LLM relay; no Docker needed
 ```
 
 ## Extending the framework
